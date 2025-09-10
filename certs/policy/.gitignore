@@ -1,0 +1,6 @@
+# Add public keys and certificates for policies to this directory
+#
+# Ignore everything in this directory
+*
+# Except this file
+!.gitignore

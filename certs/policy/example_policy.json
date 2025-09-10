@@ -1,0 +1,74 @@
+{
+  "metadata": {
+    "name": "AMD SEV-SNP Security Policy",
+    "version": "1.0",
+    "description": "Example security policy for validating AMD SEV-SNP attestation reports",
+    "created_by": "HPE",
+    "created_date": "2024-08-12",
+    "last_updated": "2024-08-12"
+  },
+  "validation_rules": {
+    "measurement": {
+      "exact_match": "..."
+    },
+    "version": {
+      "min_value": 3
+    },
+    "guest_svn": {
+      "min_value": 0
+    },
+    "vmpl": {
+      "exact_match": 0
+    },
+    "signature_algo": {
+      "allow_list": [1,2]
+    },
+    "policy": {
+      "migrate_ma_allowed": false,
+      "debug_allowed": false,
+      "smt_allowed": true
+    },
+    "platform_info": {
+      "ecc_enabled": {
+        "boolean": true
+      },
+      "tsme_enabled": {
+        "boolean": true
+      },
+      "alias_check_complete": {
+        "boolean": true
+      },
+      "smt_enabled": {
+        "boolean": true
+      }
+    },
+    "current_tcb": {
+      "bootloader": {
+        "min_value": 9
+      },
+      "tee": {
+        "min_value": 0
+      },
+      "snp": {
+        "min_value": 15
+      },
+      "microcode": {
+        "min_value": 72
+      }
+    },
+    "launch_tcb": {
+      "bootloader": {
+        "min_value": 9
+      },
+      "tee": {
+        "min_value": 0
+      },
+      "snp": {
+        "min_value": 15
+      },
+      "microcode": {
+        "min_value": 72
+      }
+    }
+  }
+}

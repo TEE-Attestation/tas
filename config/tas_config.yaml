@@ -1,0 +1,45 @@
+# Flask built-ins
+#DEBUG: false
+#TESTING: false
+#SECRET_KEY: "change-me-in-production"
+#JSON_SORT_KEYS: false
+#JSONIFY_PRETTYPRINT_REGULAR: false
+#PROPAGATE_EXCEPTIONS: false
+#TRAP_HTTP_EXCEPTIONS: false
+#TRAP_BAD_REQUEST_ERRORS: null
+#SESSION_COOKIE_NAME: "tas_session"
+
+# Server binding (used by app.run)
+SERVER_BIND_HOST: "0.0.0.0"
+SERVER_PORT: 5000
+
+# TAS settings
+#TAS_VERSION: "0.1.0"
+
+# Provide a long random key (>= TAS_API_KEY_MIN_LENGTH)
+# TODO remove this hardcoded key and use env var or secret manager in production
+# You can generate a suitable key with:
+#   import os; print(os.urandom(32).hex())
+#TAS_API_KEY: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+#TAS_API_KEY_MIN_LENGTH: 64
+#TAS_NONCE_EXPIRATION_SECONDS: 120
+
+# Redis connection
+#TAS_REDIS_HOST: "localhost"
+#TAS_REDIS_PORT: 6379
+
+# KBM plugin discovery and config
+#TAS_PLUGIN_PREFIX: "tas_kbm"
+#TAS_KBM_CONFIG_FILE: "./config/pykmip/pykmip.conf"
+
+# Verification Policy settings
+TAS_POLICY_TRUST: "./certs/policy"
+TAS_POLICY_REQUIRE_SIGNED: true
+
+# Optional nested settings (available under app.config['TAS'])
+TAS:
+  limits:
+    max_nonce_per_minute: 120
+  logging:
+    level: "INFO"
+    file: "./tas.log"

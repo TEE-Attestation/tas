@@ -1,0 +1,410 @@
+openapi: 3.0.2
+info:
+  title: TEE Attestation Service API
+  version: 0.1.0
+  description: A service for TEE (Trusted Execution Environment) attestation and key
+    management
+  contact:
+    name: HPE Security Lab
+    url: https://github.com/TEE-Attestation/tas
+    email: isaac.matthews@hpe.com
+  license:
+    name: MIT License
+    url: https://opensource.org/licenses/MIT
+servers:
+- url: http://localhost:5001
+  description: Development server
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-KEY
+      description: API key for authentication
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+          description: Error message
+      required:
+      - error
+    NonceResponse:
+      type: object
+      properties:
+        nonce:
+          type: string
+          description: Generated nonce for attestation
+          example: a1b2c3d4e5f6789abcdef0123456789abcdef0123456789abcdef0123456789
+      required:
+      - nonce
+    SecretRequest:
+      type: object
+      properties:
+        tee-type:
+          type: string
+          enum:
+          - amd-sev-snp
+          - intel-tdx
+          description: Type of TEE
+        nonce:
+          type: string
+          description: Previously obtained nonce
+        tee-evidence:
+          type: string
+          description: TEE attestation evidence (base64 encoded)
+        key-id:
+          type: string
+          description: Identifier of the key to retrieve
+        wrapping-key:
+          type: string
+          description: Base64-encoded client public key for wrapping
+      required:
+      - tee-type
+      - nonce
+      - tee-evidence
+      - key-id
+      - wrapping-key
+    SecretResponse:
+      type: object
+      properties:
+        secret_key:
+          type: string
+          description: Retrieved and wrapped secret key
+      required:
+      - secret_key
+    PolicyMetadata:
+      type: object
+      properties:
+        name:
+          type: string
+          description: Policy name
+        version:
+          type: string
+          description: Policy version
+        description:
+          type: string
+          description: Policy description
+        created_by:
+          type: string
+          description: Policy creator
+        created_date:
+          type: string
+          description: Creation date
+        last_updated:
+          type: string
+          description: Last update date
+      required:
+      - name
+      - version
+    PolicyValidationRules:
+      type: object
+      properties:
+        measurement:
+          type: object
+          properties:
+            exact_match:
+              type: string
+              description: Expected measurement value
+        version:
+          type: object
+          properties:
+            min_value:
+              type: integer
+              description: Minimum required version
+        vmpl:
+          type: object
+          properties:
+            exact_match:
+              type: integer
+              description: Expected VMPL level
+        debug:
+          type: boolean
+          description: Debug flag validation
+      description: Validation rules for TEE attestation
+    PolicySignature:
+      type: object
+      properties:
+        algorithm:
+          type: string
+          description: Signature algorithm
+          example: SHA384
+        padding:
+          type: string
+          description: Padding scheme
+          example: PSS
+        value:
+          type: string
+          description: Base64-encoded signature
+      required:
+      - algorithm
+      - padding
+      - value
+    PolicyData:
+      type: object
+      properties:
+        metadata:
+          $ref: '#/components/schemas/PolicyMetadata'
+        validation_rules:
+          $ref: '#/components/schemas/PolicyValidationRules'
+        signature:
+          $ref: '#/components/schemas/PolicySignature'
+      required:
+      - metadata
+      - validation_rules
+    PolicyStoreRequest:
+      type: object
+      properties:
+        policy_type:
+          type: string
+          description: Type of policy
+          example: SNP
+        policy_identifier:
+          type: string
+          description: Unique policy identifier
+        policy:
+          $ref: '#/components/schemas/PolicyData'
+      required:
+      - policy_type
+      - policy_identifier
+      - policy
+    VersionResponse:
+      type: object
+      properties:
+        version:
+          type: string
+          description: TAS version
+          example: 0.1.0
+      required:
+      - version
+paths:
+  /kb/v0/get_nonce:
+    get:
+      tags:
+      - Key Broker
+      summary: Generate nonce for attestation
+      description: Generates a cryptographic nonce for use in TEE attestation
+      security:
+      - ApiKeyAuth: []
+      responses:
+        '200':
+          description: Nonce generated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NonceResponse'
+        '401':
+          description: Unauthorized - Invalid API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /kb/v0/get_secret:
+    post:
+      tags:
+      - Key Broker
+      summary: Get secret key after TEE verification
+      description: Validates TEE evidence and returns the requested secret key
+      security:
+      - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SecretRequest'
+      responses:
+        '200':
+          description: Secret retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SecretResponse'
+        '400':
+          description: Bad request - Invalid parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Unauthorized - Invalid nonce or API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Key not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /policy/v0/store:
+    post:
+      tags:
+      - Policy Management
+      summary: Store a security policy
+      description: Stores a security policy for later use in attestation validation
+      security:
+      - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PolicyStoreRequest'
+      responses:
+        '201':
+          description: Policy stored successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  warning:
+                    type: string
+        '400':
+          description: Bad request - Invalid policy data
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /policy/v0/get/{policy_key}:
+    get:
+      tags:
+      - Policy Management
+      summary: Get a security policy
+      description: Retrieves a stored security policy by key
+      security:
+      - ApiKeyAuth: []
+      parameters:
+      - name: policy_key
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Policy key to retrieve
+      responses:
+        '200':
+          description: Policy retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  policy_key:
+                    type: string
+                  policy:
+                    $ref: '#/components/schemas/PolicyData'
+                  warning:
+                    type: string
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Policy not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /policy/v0/list:
+    get:
+      tags:
+      - Policy Management
+      summary: List all policies
+      description: Lists all stored security policies
+      security:
+      - ApiKeyAuth: []
+      responses:
+        '200':
+          description: Policies listed successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  policies:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        policy_key:
+                          type: string
+                        name:
+                          type: string
+                        version:
+                          type: string
+                        description:
+                          type: string
+                        signed:
+                          type: boolean
+                  count:
+                    type: integer
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /policy/v0/delete/{policy_name}:
+    delete:
+      tags:
+      - Policy Management
+      summary: Delete a security policy
+      description: Deletes a stored security policy
+      security:
+      - ApiKeyAuth: []
+      parameters:
+      - name: policy_name
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Policy name to delete
+      responses:
+        '200':
+          description: Policy deleted successfully
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Policy not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /version:
+    get:
+      tags:
+      - System
+      summary: Get TAS version
+      description: Returns the current version of the TEE Attestation Service
+      security:
+      - ApiKeyAuth: []
+      responses:
+        '200':
+          description: Version information
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VersionResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'

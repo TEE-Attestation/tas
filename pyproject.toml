@@ -1,0 +1,17 @@
+# Copyright 2025 Hewlett Packard Enterprise Development LP.
+# SPDX-License-Identifier: MIT
+#
+# This file is part of the TEE Attestation Service.
+
+
+[project]
+name = "TAS"
+version = "0.1.0-alpha"
+
+[tool.pytest.ini_options]
+addopts = [
+    "--import-mode=importlib",
+]
+
+
+[project.optional-dependencies]

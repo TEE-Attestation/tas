@@ -1,0 +1,4 @@
+strict: true         # if true, missing keys raise; defaults to True when a config file exists
+secrets:             # key_id -> plaintext secret (used as-is, no derivation)
+    my-key-1: "0xdeadbeef"
+    my-key-2: "ffeeddccbbaa"   # kept as the exact string content, not decoded
