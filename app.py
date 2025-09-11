@@ -298,10 +298,10 @@ def get_secret():
     is_verified, verify_error = vm_verify(redis_client, nonce, tee_type, tee_evidence)
     if not is_verified:
         logger.error(f"TEE verification failed: {verify_error}")
-        return jsonify({"error": verify_error}), 400
+        return jsonify({"error": "TEE verification failed"}), 400
     logger.info("TEE verification successful")
 
-    # Get clien't wrapping key (RSA public key) from the request
+    # Get client's wrapping key (RSA public key) from the request
     # The public key is expected to be in base64 format
     wrapping_key = data.get("wrapping-key")
     if not wrapping_key:
@@ -331,7 +331,7 @@ def get_secret():
         logger.info("Secret retrieval successful")
     except ValueError as e:
         logger.error(f"Secret retrieval failed: {str(e)}")
-        return jsonify({"error": str(e)}), 404
+        return jsonify({"error": "Secret retrieval failed"}), 404
 
     # Return the secret
     logger.info(f"Successfully completed secret request for {request.remote_addr}")
