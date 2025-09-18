@@ -37,14 +37,14 @@ To get TAS running in 5 minutes we recommend using a python virtual environment:
 git clone https://github.com/TEE-Attestation/TAS
 cd tas
 # Install SNP tools (required for AMD SEV-SNP support)
-git clone https://github.com/TEE-Attestation/snp_pytools
-cd snp_pytools
-pip install .
-cd ..
 python -m venv venv
 source venv/bin/activate
 
 # 2. Install dependencies
+git clone https://github.com/TEE-Attestation/snp_pytools.git
+cd snp_pytools
+pip install .
+cd ..
 pip install -r requirements.txt
 
 # 3. Start Redis (required)
@@ -108,7 +108,7 @@ source venv/bin/activate
 pip install -r requirements.txt
 
 # Install SNP tools (required for AMD SEV-SNP support)
-git clone https://github.com/TEE-Attestation/snp_pytools
+git clone https://github.com/TEE-Attestation/snp_pytools.git
 cd snp_pytools
 pip install .
 cd ..
