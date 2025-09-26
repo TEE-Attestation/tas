@@ -43,7 +43,7 @@ from tas.tas_logging import get_logger
 logger = get_logger("tas.plugins.tas_kbm_mock")
 
 AES_KEY_LEN = 32  # AES-256
-IV_LEN = 16  # AES-CBC IV size
+IV_LEN = 12  # AES-GCM IV size
 SECRET_LEN = 32  # default secret length when derivation is allowed
 
 
@@ -62,15 +62,10 @@ def _load_rsa_public_key(raw: bytes):
         raise ValueError("Invalid RSA public key format") from e
 
 
-def _pkcs7_pad(data: bytes) -> bytes:
-    padder = sympadding.PKCS7(128).padder()
-    return padder.update(data) + padder.finalize()
-
-
-def _aes_cbc_encrypt(key: bytes, iv: bytes, plaintext: bytes) -> bytes:
-    cipher = Cipher(algorithms.AES(key), modes.CBC(iv))
+def _aes_gcm_encrypt(key: bytes, iv: bytes, plaintext: bytes) -> bytes:
+    cipher = Cipher(algorithms.AES(key), modes.GCM(iv))
     enc = cipher.encryptor()
-    return enc.update(_pkcs7_pad(plaintext)) + enc.finalize()
+    return enc.update(plaintext) + enc.finalize(), enc.tag
 
 
 class _MockKBMClient:
@@ -212,7 +207,7 @@ def kbm_get_secret(kmip_client, key_id: str, wrapping_key: bytes):
     iv = _secrets.token_bytes(IV_LEN)
 
     logger.debug("Encrypting secret with AES-CBC")
-    blob = _aes_cbc_encrypt(aes_key, iv, secret)
+    blob, tag = _aes_gcm_encrypt(aes_key, iv, secret)
 
     logger.debug("Wrapping AES key with RSA public key")
     wrapped_key = pub.encrypt(
@@ -228,6 +223,7 @@ def kbm_get_secret(kmip_client, key_id: str, wrapping_key: bytes):
         "wrapped_key": _b64(wrapped_key),
         "blob": _b64(blob),
         "iv": _b64(iv),
+        "tag": _b64(tag),
     }
 
     logger.info(f"Successfully wrapped secret for key_id: {key_id}")
