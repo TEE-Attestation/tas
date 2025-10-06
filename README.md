@@ -54,7 +54,15 @@ redis-server &
 export TAS_API_KEY="your-64-character-api-key-here-make-it-secure-and-long-enough"
 export TAS_KBM_PLUGIN="tas_kbm_mock"  # Use mock plugin for testing
 
-# 5. Run TAS
+# 5. Create and sign TAS policy
+cd certs/policy/
+# Using demo signer with auto-generated keys. To generate your own keys, refer https://github.com/TEE-Attestation/tas/blob/main/docs/POLICY.md
+python3 demo_signer.py ./example_policy.json
+# Add signature to your policy
+jq -s '.[0] * .[1]' example_policy.json example_policy.json.sig > example_policy_signed.json
+cd ../..
+
+# 6. Run TAS
 python app.py
 ```
 
