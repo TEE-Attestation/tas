@@ -133,13 +133,13 @@ echo "secrets:\n  test-key-1: test-secret-value" > config/mock_secrets.yaml
 export TAS_KBM_CONFIG_FILE="config/mock_secrets.yaml"
 ```
 
-#### Option B: Production Setup (KMIP KBM)
+#### Option B: Production Setup (KMIP JSON KBM)
 ```bash
 export TAS_API_KEY="$(openssl rand -hex 32)"  # Generate secure API key
-export TAS_KBM_PLUGIN="tas_kbm_kmip"
-export TAS_KBM_CONFIG_FILE="./config/pykmip/pykmip.conf"
+export TAS_KBM_PLUGIN="tas_kbm_kmip_json"
+export TAS_KBM_CONFIG_FILE="./config/kmip/kmip.conf"
 
-# Configure PyKMIP credentials in config/pykmip/
+# Configure KMIP credentials in config/kmip/kmip.conf
 # See docs/CONFIG.md for detailed configuration options
 ```
 
@@ -491,7 +491,7 @@ python -m pytest tests/ --cov=tas --cov-report=html
 
 ## Contributing 
 
-Contributing to the project is simple! Just send a pull request through GitHub. For detailed instructions on formatting your changes and following our contribution guidelines, take a look at the [CONTRIBUTING](./CONTRIBUTING) file.
+Contributing to the project is simple! Just send a pull request through GitHub. For detailed instructions on formatting your changes and following our contribution guidelines, take a look at the [CONTRIBUTING](./CONTRIBUTING.md) file.
 
 ## Troubleshooting
 
