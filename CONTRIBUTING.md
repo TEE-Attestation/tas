@@ -8,7 +8,7 @@ Thank you for your interest in contributing! Please follow the guidelines below 
 
 All contributions are accepted via **pull requests** on GitHub. Please submit your pull requests to this repository: [https://github.com/TEE-Attestation/tas.git](https://github.com/TEE-Attestation/tas.git).
 
-By contributing, you agree that all code submissions fall under the terms of the **MIT License** (see the [LICENSE](./LICENSE) file). Additionally, all commits must be **signed off**.
+By contributing, you agree that all code submissions fall under the terms of the **MIT License** (see the [LICENSE](./LICENSE.md) file). Additionally, all commits must be **signed off**.
 
 ---
 
