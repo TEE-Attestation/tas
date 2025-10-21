@@ -351,7 +351,7 @@ def vm_verify_tdx(nonce, decoded_evidence):
     # TODO: Implement actual TDX verification
     logger.info("TDX evidence verification not performed (placeholder implementation)")
     log_function_exit("vm_verify_tdx", "success")
-    return True, None
+    return False, None
 
 
 def vm_verify(redis_client, nonce, tee_type, tee_evidence):
