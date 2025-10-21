@@ -31,7 +31,7 @@ TAS provides:
 
 ## Quick Start
 
-To get TAS running in 5 minutes we recommend using a python virtual environment:
+To get the TAS server running in 5 minutes we recommend using a python virtual environment:
 
 ```bash
 # 1. Clone and setup
@@ -68,6 +68,8 @@ python app.py
 ```
 
 TAS will be available at `http://localhost:5000`. See [API Documentation](#api-documentation) for available endpoints.
+
+With TAS running you can use the [TAS agent](https://github.com/TEE-Attestation/tas_agent) to collect evidence and attest your CVMs. Alternatively for testing, check the API specification if you want to manually submit evidence to TAS.
 
 ## Prerequisites
 
