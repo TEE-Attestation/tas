@@ -11,9 +11,9 @@
 
 
 import base64
-from tas.tas_logging import get_logger
-from plugins.kjc.kmip_json_client import KmipJsonClient
 
+from plugins.kjc.kmip_json_client import KmipJsonClient
+from tas.tas_logging import get_logger
 
 # Setup logging for the KMIP plugin
 logger = get_logger("tas.plugins.tas_kbm_kmip_json")
