@@ -1,0 +1,78 @@
+name: Python Matrix Test
+
+on: [push]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        # seeing import error on 3.14 so not including for now
+        python-version: ["3.10", "3.11", "3.12", "3.13"] # "3.14"]
+        include:
+          - python-version: "3.10"
+            port: "5000"
+          - python-version: "3.11"
+            port: "5001"
+          - python-version: "3.12"
+            port: "5002"
+          - python-version: "3.13"
+            port: "5003"
+          #- python-version: "3.14"
+          #  port: "5004"
+          
+
+    steps:
+      - uses: actions/checkout@v5
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      # You can test your matrix by printing the current Python version
+      - name: Display Python version
+        run: python -c "import sys; print(sys.version)"
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y redis-server
+          redis-server --version
+          pip install --upgrade pip
+          git clone https://github.com/TEE-Attestation/sev_pytools.git
+          cd sev_pytools
+          pip install .
+          cd ..
+          pip install -r requirements.txt
+
+      - name: Test with pytest
+        run: |
+          pip install pytest pytest-cov
+          python -m pytest tests/ -v
+
+      - name: Test demo signer
+        run: |
+          cd ./certs/policy
+          python demo_signer.py ./example_policy.json
+          cd ../../
+
+      - name: install ss command
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y iproute2
+
+      - name: run application for 1 second with flask
+        run: |
+          timeout --preserve-status -k 1m -s SIGINT 1s flask run -h localhost -p ${{ matrix.port }}
+          sudo ss --kill state listening src :${{ matrix.port }}
+        env:
+          APP_ENV: "production"
+          DEBUG: "false"
+          TAS_API_KEY: "our-secure-api-key-asdfg-12345-zxcvb-qwerty-lkjhg-56789-a1s23-56"
+      - name: run application for 1 second with gunicorn
+        run: |
+          timeout --preserve-status -k 1m -s SIGINT 1s gunicorn -w 4 -b localhost:${{matrix.port}} app:app
+        env:
+          APP_ENV: "production"
+          DEBUG: "false"
+          TAS_API_KEY: "our-secure-api-key-asdfg-12345-zxcvb-qwerty-lkjhg-56789-a1s23-56"
