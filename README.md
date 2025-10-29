@@ -37,13 +37,12 @@ To get the TAS server running in 5 minutes we recommend using a python virtual e
 # 1. Clone and setup
 git clone https://github.com/TEE-Attestation/TAS
 cd tas
-# Install SNP tools (required for AMD SEV-SNP support)
 python -m venv venv
 source venv/bin/activate
 
 # 2. Install dependencies
-git clone https://github.com/TEE-Attestation/snp_pytools.git
-cd snp_pytools
+git clone https://github.com/TEE-Attestation/sev_pytools.git
+cd sev_pytools
 pip install .
 cd ..
 pip install -r requirements.txt
@@ -118,9 +117,9 @@ source venv/bin/activate
 # Install TAS dependencies
 pip install -r requirements.txt
 
-# Install SNP tools (required for AMD SEV-SNP support)
-git clone https://github.com/TEE-Attestation/snp_pytools.git
-cd snp_pytools
+# Install sev_pytools (required for AMD SEV-SNP support)
+git clone https://github.com/TEE-Attestation/sev_pytools.git
+cd sev_pytools
 pip install .
 cd ..
 ```
@@ -357,7 +356,7 @@ curl -X POST \
   -H "Content-Type: application/json" \
   -H "X-API-KEY: your-api-key" \
   -d '{
-    "policy_type": "SNP",
+    "policy_type": "SEV",
     "policy_identifier": "my-policy-hash",
     "policy": {
       "metadata": {"name": "Test Policy", "version": "1.0"},

@@ -131,32 +131,32 @@ def get_logger(name: str = "tas") -> logging.Logger:
     return logging.getLogger(name)
 
 
-def configure_snp_pytools_logging():
-    """Configure snp_pytools logging to use TAS logging settings."""
-    # Create snp_pytools logger as child of tas for inheritance
-    snp_logger = logging.getLogger("tas.snp_pytools")
+def configure_sev_pytools_logging():
+    """Configure sev_pytools logging to use TAS logging settings."""
+    # Create sev_pytools logger as child of tas for inheritance
+    sev_logger = logging.getLogger("tas.sev_pytools")
 
-    # Configure the direct snp_pytools logger to forward to our tas.snp_pytools
-    direct_snp_logger = logging.getLogger("snp_pytools")
-    direct_snp_logger.handlers.clear()
-    direct_snp_logger.propagate = False
-    direct_snp_logger.setLevel(logging.DEBUG)
+    # Configure the direct sev_pytools logger to forward to our tas.sev_pytools
+    direct_sev_logger = logging.getLogger("sev_pytools")
+    direct_sev_logger.handlers.clear()
+    direct_sev_logger.propagate = False
+    direct_sev_logger.setLevel(logging.DEBUG)
 
-    # Create handler that forwards messages to our tas.snp_pytools logger
+    # Create handler that forwards messages to our tas.sev_pytools logger
     class TASForwardingHandler(logging.Handler):
         def emit(self, record):
-            snp_logger.handle(record)
+            sev_logger.handle(record)
 
     forwarding_handler = TASForwardingHandler()
     forwarding_handler.setLevel(logging.DEBUG)
-    direct_snp_logger.addHandler(forwarding_handler)
+    direct_sev_logger.addHandler(forwarding_handler)
 
-    logger.debug("Configured snp_pytools logging to inherit TAS settings")
+    logger.debug("Configured sev_pytools logging to inherit TAS settings")
 
 
 def configure_external_logging():
     """Reconfigure external library logging to reflect TAS logging changes."""
-    configure_snp_pytools_logging()
+    configure_sev_pytools_logging()
 
     # Add other external library logging configuration here as needed
     # For example:

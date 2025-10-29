@@ -29,7 +29,7 @@ Policies are stored in Redis and referenced during attestation validation to det
 ```json
 {
   "metadata": {
-    "name": "SNP Example Policy",
+    "name": "SEV Example Policy",
     "version": "1.0",
     "description": "Policy description",
     "created_date": "2024-09-09",
@@ -292,7 +292,7 @@ Ensure value is not in banned list:
    ```bash
    # Track policy changes
    git add policies/
-   git commit -m "Add production SNP policy v1.0"
+   git commit -m "Add production SEV policy v1.0"
    git tag policy-v1.0
    ```
 

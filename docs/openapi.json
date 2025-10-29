@@ -221,7 +221,7 @@
           "policy_type": {
             "type": "string",
             "description": "Type of policy",
-            "example": "SNP"
+            "example": "SEV"
           },
           "policy_identifier": {
             "type": "string",

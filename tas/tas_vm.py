@@ -17,7 +17,7 @@ import redis
 from cryptography import x509
 from cryptography.hazmat.primitives import serialization
 from flask import current_app
-from snp_pytools import AttestationPolicy, AttestationReport, fetch, verify
+from sev_pytools import AttestationPolicy, AttestationReport, fetch, verify
 
 from tas.policy_helper import verify_policy_signature
 from tas.tas_logging import get_logger, log_function_entry, log_function_exit
@@ -29,17 +29,17 @@ logger = get_logger(__name__)
 def fetch_certs_from_redis(redis_client: redis.StrictRedis, decoded_evidence):
     """
     Fetches certificates (VCEK, ASK, ARK) from Redis based on the provided TEE evidence.
-    This function decodes base64-encoded TEE evidence, parses the SNP report to extract
+    This function decodes base64-encoded TEE evidence, parses the SEV-SNP report to extract
     chip ID and reported TCB information, then uses these values to construct a Redis
     key for fetching the corresponding certificates.
         redis_client (redis.StrictRedis): Redis client instance for database operations.
         tee_evidence (str): Base64-encoded TEE (Trusted Execution Environment) evidence
-                           containing SNP report data.
+                           containing SEV-SNP report data.
         list or None: A list containing three certificate strings [vcek, ask, ark] if
                      all certificates are found in Redis, None otherwise.
     Raises:
         Does not raise exceptions directly, but catches and logs various exceptions:
-        - SNP report parsing errors
+        - SEV-SNP report parsing errors
     Notes:
         - The Redis key format is "certs:<chip_id>:<reported_tcb>"
         - All three certificates (VCEK, ASK, ARK) must be present for a successful return
@@ -51,7 +51,7 @@ def fetch_certs_from_redis(redis_client: redis.StrictRedis, decoded_evidence):
     try:
         report = AttestationReport.unpack(decoded_evidence)
     except Exception as e:
-        logger.error(f"Failed to parse SNP report: {e}")
+        logger.error(f"Failed to parse SEV-SNP report: {e}")
         return None, None
 
     # Use the chip_id and reported_tcb to fetch the VCEK from Redis
@@ -108,7 +108,7 @@ def save_certs_to_redis(
 
     Parameters:
         redis_client (redis.StrictRedis): Redis client instance for database operations.
-        tee_evidence (bytes): TEE evidence containing SNP report data.
+        tee_evidence (bytes): TEE evidence containing SEV-SNP report data.
         vcek (bytes): The VCEK certificate to save.
         ask (bytes): The ASK certificate to save.
         ark (bytes): The ARK certificate to save.
@@ -130,7 +130,7 @@ def save_certs_to_redis(
     try:
         report = AttestationReport.unpack(decoded_evidence)
     except Exception as e:
-        logger.error(f"Failed to parse SNP report: {e}")
+        logger.error(f"Failed to parse SEV-SNP report: {e}")
         return False
 
     chip_id = report.chip_id
@@ -251,7 +251,7 @@ def get_policy_from_redis(redis_client: redis.StrictRedis, policy_key: str):
     return policy_json
 
 
-def vm_verify_snp(redis_client: redis.StrictRedis, nonce, decoded_evidence):
+def vm_verify_sev(redis_client: redis.StrictRedis, nonce, decoded_evidence):
     """
     Verifies the decoded evidence for AMD SEV-SNP.
 
@@ -263,7 +263,7 @@ def vm_verify_snp(redis_client: redis.StrictRedis, nonce, decoded_evidence):
         bool: True if verification is successful, False otherwise.
         str: An error message if verification fails, None otherwise.
     """
-    log_function_entry("vm_verify_snp")
+    log_function_entry("vm_verify_sev")
 
     if not nonce:
         return False, "Nonce is invalid"
@@ -301,7 +301,7 @@ def vm_verify_snp(redis_client: redis.StrictRedis, nonce, decoded_evidence):
             crl = x509.load_pem_x509_certificate(certs["crl"])
 
     # Fetch policy from Redis
-    policy_key = f"policy:SNP:{report.measurement.hex()}"
+    policy_key = f"policy:SEV:{report.measurement.hex()}"
 
     try:
         policy_json = get_policy_from_redis(redis_client, policy_key)
@@ -312,7 +312,7 @@ def vm_verify_snp(redis_client: redis.StrictRedis, nonce, decoded_evidence):
     # Verify the TEE evidence
     try:
         policy = AttestationPolicy(policy_json)
-        logger.debug("Starting snp_pytools attestation verification")
+        logger.debug("Starting sev_pytools attestation verification")
         verified = verify.verify_attestation_report(
             report,
             certificates=certs,
@@ -320,11 +320,11 @@ def vm_verify_snp(redis_client: redis.StrictRedis, nonce, decoded_evidence):
             policy=policy,
             report_data=nonce.encode("utf-8"),
         )
-        logger.debug("Completed snp_pytools attestation verification")
+        logger.debug("Completed sev_pytools attestation verification")
 
         if verified:
             logger.info("AMD SEV-SNP evidence verification successful")
-            log_function_exit("vm_verify_snp", "success")
+            log_function_exit("vm_verify_sev", "success")
             return True, None
         else:
             logger.error("AMD SEV-SNP evidence verification failed")
@@ -394,7 +394,7 @@ def vm_verify(redis_client, nonce, tee_type, tee_evidence):
 
     # Call the appropriate verification function based on tee_type
     if tee_type == "amd-sev-snp":
-        result = vm_verify_snp(redis_client, nonce, decoded_evidence)
+        result = vm_verify_sev(redis_client, nonce, decoded_evidence)
     elif tee_type == "intel-tdx":
         result = vm_verify_tdx(nonce, decoded_evidence)
     else:

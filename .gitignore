@@ -1,7 +1,7 @@
 
 
-# Do  not track snp_pytools
-snp_pytools/
+# Do  not track sev_pytools
+sev_pytools/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
