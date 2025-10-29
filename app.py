@@ -346,7 +346,7 @@ def store_policy():
 
     Expected JSON payload:
     {
-        "policy_type": "SNP",
+        "policy_type": "SEV",
         "policy_identifier": "123456789abcdef..."
         "policy": {
             "metadata": {
@@ -381,7 +381,7 @@ def store_policy():
     policy_type = data.get("policy_type")
     if not policy_type:
         logger.error("Policy store request missing policy_type")
-        return jsonify({"error": "Policy type is required (e.g. SNP, TDX)"}), 400
+        return jsonify({"error": "Policy type is required (e.g. SEV, TDX)"}), 400
 
     policy_identifier = data.get("policy_identifier")
     if not policy_identifier:
