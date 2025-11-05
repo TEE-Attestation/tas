@@ -9,7 +9,7 @@ jobs:
       fail-fast: true
       matrix:
         # seeing import error on 3.14 so not including for now
-        python-version: ["3.10", "3.11", "3.12", "3.13"] # "3.14"]
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
         include:
           - python-version: "3.10"
             port: "5000"
@@ -19,8 +19,8 @@ jobs:
             port: "5002"
           - python-version: "3.13"
             port: "5003"
-          #- python-version: "3.14"
-          #  port: "5004"
+          - python-version: "3.14"
+            port: "5004"
           
 
     steps:
