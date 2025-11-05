@@ -1,7 +1,10 @@
 name: Python Matrix Test
 
-on: [push]
-
+on:
+  pull_request:
+  push:
+    branches: [main]
+    
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -21,7 +24,6 @@ jobs:
             port: "5003"
           - python-version: "3.14"
             port: "5004"
-          
 
     steps:
       - uses: actions/checkout@v5
