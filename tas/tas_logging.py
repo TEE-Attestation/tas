@@ -154,13 +154,33 @@ def configure_sev_pytools_logging():
     logger.debug("Configured sev_pytools logging to inherit TAS settings")
 
 
+def configure_tdx_pytools_logging():
+    """Configure tdx_pytools logging to use TAS logging settings."""
+    # Create tdx_pytools logger as child of tas for inheritance
+    tdx_logger = logging.getLogger("tas.tdx_pytools")
+
+    # Configure the direct tdx_pytools logger to forward to our tas.tdx_pytools
+    direct_tdx_logger = logging.getLogger("tdx_pytools")
+    direct_tdx_logger.handlers.clear()
+    direct_tdx_logger.propagate = False
+    direct_tdx_logger.setLevel(logging.DEBUG)
+
+    # Create handler that forwards messages to our tas.tdx_pytools logger
+    class TASForwardingHandler(logging.Handler):
+        def emit(self, record):
+            tdx_logger.handle(record)
+
+    forwarding_handler = TASForwardingHandler()
+    forwarding_handler.setLevel(logging.DEBUG)
+    direct_tdx_logger.addHandler(forwarding_handler)
+
+    logger.debug("Configured tdx_pytools logging to inherit TAS settings")
+
+
 def configure_external_logging():
     """Reconfigure external library logging to reflect TAS logging changes."""
     configure_sev_pytools_logging()
-
-    # Add other external library logging configuration here as needed
-    # For example:
-    # configure_tdx_pytools_logging()
+    configure_tdx_pytools_logging()
 
 
 # At the moment these functions are called from logger in the logs rather than their parent
