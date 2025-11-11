@@ -34,7 +34,7 @@ SERVER_PORT: 5000
 
 # Verification Policy settings
 TAS_POLICY_TRUST: "./certs/policy"
-TAS_POLICY_REQUIRE_SIGNED: true
+TAS_ENFORCE_SIGNED_POLICIES: true
 
 # Optional nested settings (available under app.config['TAS'])
 TAS:

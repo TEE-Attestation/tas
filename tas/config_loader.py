@@ -313,8 +313,8 @@ def load_configuration(app):
             )
             # If policy signing is unset or false, warn that the trust store config item should be removed
             if not (
-                "TAS_POLICY_REQUIRE_SIGNED" in app.config
-                and app.config["TAS_POLICY_REQUIRE_SIGNED"]
+                "TAS_ENFORCE_SIGNED_POLICIES" in app.config
+                and app.config["TAS_ENFORCE_SIGNED_POLICIES"]
             ):
                 logger.warning(
                     "To run without a trust store, unset TAS_POLICY_TRUST in your configuration."
