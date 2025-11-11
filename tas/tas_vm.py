@@ -15,12 +15,12 @@ import os
 from urllib.parse import unquote
 
 import redis
+import sev_pytools as sev
+import tdx_pytools as tdx
 from cryptography import x509
 from cryptography.hazmat.primitives import serialization
 from flask import current_app
 
-import sev_pytools as sev
-import tdx_pytools as tdx
 from tas.policy_helper import verify_policy_signature
 from tas.tas_logging import get_logger, log_function_entry, log_function_exit
 
