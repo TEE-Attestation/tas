@@ -45,6 +45,10 @@ jobs:
           cd sev_pytools
           pip install .
           cd ..
+          git clone https://github.com/TEE-Attestation/tdx_pytools.git
+          cd tdx_pytools
+          pip install .
+          cd ..
           pip install -r requirements.txt
 
       - name: Test with pytest
