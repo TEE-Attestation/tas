@@ -59,7 +59,7 @@ jobs:
       - name: Test demo signer
         run: |
           cd ./certs/policy
-          python demo_signer.py ./example_policy.json
+          python demo_signer.py ./sev_example_policy.json
           cd ../../
 
       - name: install ss command
