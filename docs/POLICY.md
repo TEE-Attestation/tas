@@ -98,6 +98,21 @@ Policies are stored in Redis and referenced during attestation validation to det
 | `value` | string | Yes | Base64 encoded signature |
 | `signed_data` | string | No | Specifies which structures were signed, not implemented yet |
 
+### TDX Specific Fields
+##### TCB
+The `tcb` item within `validation_rules` is a special case for TDX policies. It is used to require specific TCB levels or better for various components, along with an `update` field to require a minimum TCB-R freshness. See the example policy `tdx_example_policy.json` or the excerpt below for an example.
+
+```json
+...
+  "validation_rules": {
+    "tcb": {
+      "update": "standard",
+      "platform_tcb": "UpToDate",
+      "tdx_module_tcb": "UpToDate",
+      "qe_tcb": "UpToDate"
+    },
+...
+```
 
 ## Signing Policies
 
