@@ -432,7 +432,7 @@ def get_policy_from_redis(redis_client: redis.StrictRedis, policy_key: str):
 
     if not policy_json.get("signature"):
         # Policy is not signed
-        if current_app.config.get("TAS_POLICY_REQUIRE_SIGNED", True):
+        if current_app.config.get("TAS_ENFORCE_SIGNED_POLICIES", True):
             logger.error(f"Policy '{policy_key}' is not signed and signing is required")
             raise ValueError("Policy not signed")
         else:
