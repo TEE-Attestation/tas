@@ -219,7 +219,7 @@ curl -X POST http://localhost:5001/policy/v0/store \
   -H "Content-Type: application/json" \
   -H "X-API-KEY: $TAS_API_KEY" \
   -d  '{
-    "policy_type": "SNP",
+    "policy_type": "SEV",
     "policy_identifier": "...",
     "policy": {
       "metadata": {...},
