@@ -295,7 +295,7 @@ def get_secret():
 
     # Call vm_verify to validate the parameters
     logger.info(f"Starting TEE verification for type: {tee_type}")
-    is_verified, verify_error = vm_verify(redis_client, nonce, tee_type, tee_evidence)
+    is_verified, verify_error = vm_verify(redis_client, nonce, tee_type, tee_evidence, key_id)
     if not is_verified:
         logger.error(f"TEE verification failed: {verify_error}")
         return jsonify({"error": "TEE verification failed"}), 400
@@ -346,8 +346,8 @@ def store_policy():
 
     Expected JSON payload:
     {
-        "policy_type": "SEV",
-        "policy_identifier": "123456789abcdef..."
+        "policy_type": "SEV|TDX",
+        "key_id": "my-key-1",
         "policy": {
             "metadata": {
                 "name": "My Security Policy",
@@ -383,10 +383,10 @@ def store_policy():
         logger.error("Policy store request missing policy_type")
         return jsonify({"error": "Policy type is required (e.g. SEV, TDX)"}), 400
 
-    policy_identifier = data.get("policy_identifier")
-    if not policy_identifier:
-        logger.error("Policy store request missing policy_identifier")
-        return jsonify({"error": "Policy identifier is required"}), 400
+    key_id = data.get("key_id")
+    if not key_id:
+        logger.error("Policy store request missing key_id")
+        return jsonify({"error": "Key ID is required"}), 400
 
     policy = data.get("policy")
     if not policy:
@@ -411,7 +411,7 @@ def store_policy():
     is_signed = "signature" in policy
     warning_message = None
     if not is_signed:
-        logger.warning(f"Policy {policy_type}:{policy_identifier} is not signed")
+        logger.warning(f"Policy {policy_type}:{key_id} is not signed")
         warning_message = (
             "WARNING: Policy is not signed and cannot be verified for integrity"
         )
@@ -424,7 +424,7 @@ def store_policy():
                 400,
             )
     else:
-        logger.info(f"Policy {policy_type}:{policy_identifier} is signed")
+        logger.info(f"Policy {policy_type}:{key_id} is signed")
         if not verify_policy_signature(policy, app.config.get("TAS_TRUSTED_KEYS", [])):
             logger.error("Policy signature verification failed")
             return jsonify({"error": "Policy signature verification failed"}), 400
@@ -432,7 +432,7 @@ def store_policy():
 
     try:
         # Store the policy in Redis with a descriptive key
-        policy_key = f"policy:{policy_type}:{policy_identifier}"
+        policy_key = f"policy:{policy_type}:{key_id}"
         policy_json = json.dumps(policy)
 
         # Store with no expiration (policies should persist)

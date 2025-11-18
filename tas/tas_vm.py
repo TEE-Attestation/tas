@@ -457,7 +457,7 @@ def get_policy_from_redis(redis_client: redis.StrictRedis, policy_key: str):
     return policy_json
 
 
-def sev_vm_verify(redis_client: redis.StrictRedis, nonce, decoded_evidence):
+def sev_vm_verify(redis_client: redis.StrictRedis, nonce, decoded_evidence, key_id):
     """
     Verifies the decoded evidence for AMD SEV-SNP.
 
@@ -465,6 +465,7 @@ def sev_vm_verify(redis_client: redis.StrictRedis, nonce, decoded_evidence):
         redis_client: The Redis client instance.
         nonce (str): The nonce to verify.
         decoded_evidence (bytes): The decoded TEE evidence.
+        key_id (str): The key identifier.
 
     Returns:
         bool: True if verification is successful, False otherwise.
@@ -511,7 +512,7 @@ def sev_vm_verify(redis_client: redis.StrictRedis, nonce, decoded_evidence):
             crl = x509.load_pem_x509_certificate(certs["crl"])
 
     # Fetch policy from Redis
-    policy_key = f"policy:SEV:{report.measurement.hex()}"
+    policy_key = f"policy:SEV:{key_id}"
 
     try:
         policy_json = get_policy_from_redis(redis_client, policy_key)
@@ -547,7 +548,7 @@ def sev_vm_verify(redis_client: redis.StrictRedis, nonce, decoded_evidence):
         return False, f"Verification error: {str(e)}"
 
 
-def tdx_vm_verify(redis_client: redis.StrictRedis, nonce, decoded_evidence):
+def tdx_vm_verify(redis_client: redis.StrictRedis, nonce, decoded_evidence, key_id):
     """
     Verifies the decoded evidence for Intel TDX.
 
@@ -555,6 +556,7 @@ def tdx_vm_verify(redis_client: redis.StrictRedis, nonce, decoded_evidence):
         redis_client: The Redis client instance.
         nonce (str): The nonce to verify.
         decoded_evidence (bytes): The decoded TEE evidence.
+        key_id (str): The key identifier.
 
     Returns:
         bool: True if verification is successful, False otherwise.
@@ -571,7 +573,7 @@ def tdx_vm_verify(redis_client: redis.StrictRedis, nonce, decoded_evidence):
     quote = tdx.Quote.unpack(decoded_evidence)
 
     # Fetch policy from Redis
-    policy_key = f"policy:TDX:TDX"
+    policy_key = f"policy:TDX:{key_id}"
     try:
         policy_json = get_policy_from_redis(redis_client, policy_key)
     except ValueError as e:
@@ -636,7 +638,7 @@ def tdx_vm_verify(redis_client: redis.StrictRedis, nonce, decoded_evidence):
     return False, None
 
 
-def vm_verify(redis_client, nonce, tee_type, tee_evidence):
+def vm_verify(redis_client, nonce, tee_type, tee_evidence, key_id):
     """
     Verifies the provided nonce, TEE type, and TEE evidence.
 
@@ -644,6 +646,7 @@ def vm_verify(redis_client, nonce, tee_type, tee_evidence):
         nonce (str): The nonce to verify.
         tee_type (str): The type of TEE (e.g., "amd-sev-snp", "intel-tdx").
         tee_evidence (str): Base64-encoded TEE evidence.
+        key_id (str): The key identifier.
 
     Returns:
         bool: True if verification is successful, False otherwise.
@@ -676,9 +679,9 @@ def vm_verify(redis_client, nonce, tee_type, tee_evidence):
 
     # Call the appropriate verification function based on tee_type
     if tee_type == "amd-sev-snp":
-        result = sev_vm_verify(redis_client, nonce, decoded_evidence)
+        result = sev_vm_verify(redis_client, nonce, decoded_evidence, key_id)
     elif tee_type == "intel-tdx":
-        result = tdx_vm_verify(redis_client, nonce, decoded_evidence)
+        result = tdx_vm_verify(redis_client, nonce, decoded_evidence, key_id)
     else:
         logger.error(f"Unsupported TEE type: {tee_type}")
         return False, "Unsupported TEE type"
