@@ -160,14 +160,14 @@ components:
           type: string
           description: Type of policy
           example: SEV
-        policy_identifier:
+        key_id:
           type: string
-          description: Unique policy identifier
+          description: Identifier of the key to retrieve after successful attestation against policy
         policy:
           $ref: '#/components/schemas/PolicyData'
       required:
       - policy_type
-      - policy_identifier
+      - key_id
       - policy
     VersionResponse:
       type: object
