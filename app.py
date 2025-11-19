@@ -295,7 +295,9 @@ def get_secret():
 
     # Call vm_verify to validate the parameters
     logger.info(f"Starting TEE verification for type: {tee_type}")
-    is_verified, verify_error = vm_verify(redis_client, nonce, tee_type, tee_evidence, key_id)
+    is_verified, verify_error = vm_verify(
+        redis_client, nonce, tee_type, tee_evidence, key_id
+    )
     if not is_verified:
         logger.error(f"TEE verification failed: {verify_error}")
         return jsonify({"error": "TEE verification failed"}), 400

@@ -220,7 +220,7 @@ curl -X POST http://localhost:5001/policy/v0/store \
   -H "X-API-KEY: $TAS_API_KEY" \
   -d  '{
     "policy_type": "SEV",
-    "policy_identifier": "...",
+    "key_id": "...",
     "policy": {
       "metadata": {...},
       "validation_rules": {...},
@@ -229,7 +229,7 @@ curl -X POST http://localhost:5001/policy/v0/store \
   
 
 # Expected response:
-# {"message": "Policy 'policy:policy_type:policy_identifier' stored successfully"}
+# {"message": "Policy 'policy:policy_type:key_id' stored successfully"}
 ```
 
 ## Validation Rule Types

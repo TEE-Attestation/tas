@@ -367,7 +367,7 @@ curl -X POST \
   -H "X-API-KEY: your-api-key" \
   -d '{
     "policy_type": "SEV",
-    "policy_identifier": "my-policy-hash",
+    "key_id": "my-key-1",
     "policy": {
       "metadata": {"name": "Test Policy", "version": "1.0"},
       "signature": {...},
