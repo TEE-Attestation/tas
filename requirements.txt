@@ -1,7 +1,6 @@
 cryptography>=40.0.0
 pycryptodome>=3.15.0
-PyKMIP @ git+https://github.com/OpenKMIP/PyKMIP.git@6cd44b572b0ca55adf01a8a12078b2284602e64c
-Flask>=2.0.0,<3.0.0
+Flask>=3.0.0
 gunicorn>=20.0.0
 redis>=4.0.0
 hexdump>=3.0
