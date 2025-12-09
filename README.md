@@ -394,7 +394,6 @@ TAS supports pluggable Key Broker Modules (KBM) for different backend key manage
 | Plugin | Description | Use Case |
 |--------|-------------|----------|
 | `tas_kbm_kmip_json` | KMIP JSON protocol backend | Production with KMIP servers (Cosmain KMS, etc.) |
-| `tas_kbm_kmip` | KMIP binary protocol backend | Production with KMIP servers (Thales CTM, etc.). **Will NOT work with latest [tas_agent](https://github.com/TEE-Attestation/tas_agent/commit/21f11eeba611788ed229e5c7109e2d41be67f675) that uses AES-GCM encryption.** |
 | `tas_kbm_mock` | Software-based mock | Development and testing |
 
 ### Plugin Interface
