@@ -50,6 +50,11 @@ jobs:
           pip install .
           cd ..
           pip install -r requirements.txt
+      
+      - name: python compile check
+        run: |
+           python -m compileall -q -o 2  ./
+        
 
       - name: Test with pytest
         run: |
