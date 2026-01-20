@@ -385,6 +385,31 @@ curl -X POST \
 **Detailed Configuration**: See [docs/POLICY.md](docs/POLICY.md) for documentation on policy structure, signing, and uploading.
 
 
+
+## Redis Key Policies
+
+Before a confidential guest VM can be attested using ``tas_agent`` one or
+more key access policies must be loaded into ``redis``. Detailed usage of
+redis for data management is beyond the scope of this document. To get
+started, however, the ``redis-cli`` tool can be used to issue the ``set``
+command for a given policy key/value pair.
+
+The ``redis`` keys used by TAS take the format ``policy:$TECHNOLOGY:$KEY``,
+where ``$TECHNOLOGY`` is either ``SEV`` or ``TDX``, and ``$KEY`` must match
+the key ID to be requested with the ``tas_agent`` command. The named keys
+must also be present in the configured key broker module.
+
+For example, to allow a TDX confidential guest to attest and request a key
+named ``my-key``, the ``redis`` policy key record would be identified by
+``policy:TDX:my-key-1``. The value to be stored in against the policy key
+is the JSON document that represents the (signed) attestation policy. A
+complete example would be
+
+```bash
+# redis-cli
+127.0.0.1:6379> set policy:TDX:my-key-1 '{"metadata":{"name":..snip......"cpu_svn":{"exact_match":"030...000"}}}}}}'
+```
+
 ## KBM Plugins
 
 TAS supports pluggable Key Broker Modules (KBM) for different backend key management systems.
