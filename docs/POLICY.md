@@ -205,8 +205,57 @@ python3 demo_signer.py --cert your-policy.json
 
 # Then add the certificate to your configured policy trust directory
 ```
-
 ## Registering Policies
+
+To register a policy with TAS, you must wrap your **signed policy from the previous step** in a registration payload. This payload specifies the policy type and associates it with a secret ID.
+
+### Registration Payload Format
+
+**Important:** The `policy` field contains your complete signed policy from Step 2 above (including metadata, validation_rules, and signature).
+
+```json
+{
+  "policy_type": "SEV",
+  "key_id": "my-secret-id",
+  "policy": {
+    // This is your complete signed policy from the signing step above
+    "metadata": {
+      "name": "SEV Production Policy",
+      "version": "1.0",
+      "description": "Production policy for SEV attestation",
+      "created_date": "2024-09-09"
+    },
+    "validation_rules": {
+      "measurement": {
+        "exact_match": "a1b2c3d4e5f6789..."
+      },
+      "policy": {
+        "debug_allowed": false,
+        "migrate_ma_allowed": false
+      }
+    },
+    "signature": {
+      "algorithm": "SHA384",
+      "padding": "PSS",
+      "value": "base64-encoded-signature..."
+    }
+  }
+}
+```
+
+### Registration Payload Fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `policy_type` | string | Yes | TEE type: either "SEV" or "TDX" |
+| `key_id` | string | Yes | **The secret ID that this policy will be used to release** (must match the secret registered in KMS or HSM) |
+| `policy` | object | Yes | **Your complete signed policy from Step 2** (the entire policy JSON including signature) |
+
+**How it works:** When a client requests a secret, TAS uses the policy associated with that secret's `key_id` to validate the attestation evidence before releasing the secret. The `key_id` must exist in the key manager that TAS KBM is connected to.
+
+**Policy Storage Format:** The policy will be stored in Redis using the key format: `policy:{policy_type}:{key_id}`
+
+Example: `policy:SEV:my-secret-id`
 
 ### Using curl
 
