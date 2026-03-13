@@ -126,6 +126,7 @@ Stored in Flask's config; set directly via env without prefix:
 | TAS_KBM_CONFIG_FILE | str | `"./config/kbm_mock_config.yaml"` | No | Path to the configuration file passed to the selected KBM plugin during initialisation. The format depends on the plugin (e.g., PyKMIP conf, KMIP-JSON YAML). |
 | TAS_EXTRA_PLUGIN_DIR | str | `None` | No | Optional filesystem path to an additional directory to search for KBM plugins. Useful for loading out-of-tree or custom plugins without modifying the main `plugins/` folder. |
 | TAS_POLICY_TRUST | str | *(not set)* | No | Path to a directory or PEM file containing trusted public keys used to verify policy signatures. If set, keys are loaded at startup; if no valid keys are found and signed-policy enforcement is enabled, the application refuses to start. |
+| TAS_ENFORCE_SIGNED_POLICIES | bool | `true` | No | Controls whether policy signatures are checked. When `true` (default), signed policies must pass signature verification and unsigned policies are rejected. When `false`, all signature checks are skipped. **Warning: Set to `false` only for testing. Never disable in production — tampered or fake policies will be accepted.** |
 
 ### Nested TAS settings
 
@@ -151,6 +152,12 @@ These live under `app.config["TAS"]` as a nested dictionary. Set them in the YAM
 
 - **TAS_API_KEY** is required and must be at least `TAS_API_KEY_MIN_LENGTH` characters long. The application raises a `RuntimeError` and refuses to start otherwise.
 - **TAS_POLICY_TRUST**, if set, must point to a path containing at least one valid PEM certificate. If no valid keys can be loaded and signed-policy enforcement is enabled, the application raises a `RuntimeError`.
+- **TAS_ENFORCE_SIGNED_POLICIES** defaults to `true`. Setting it to `false` disables all policy signature checks. This means:
+  - Unsigned policies are accepted without error.
+  - Signed policies are stored without verifying the signature.
+  - Tampered or forged policies cannot be detected.
+
+  **Only set to `false` in development or test environments. In production, always keep this set to `true`.**
 
 Example deep override:
 ```bash
