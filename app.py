@@ -427,10 +427,21 @@ def store_policy():
             )
     else:
         logger.info(f"Policy {policy_type}:{key_id} is signed")
-        if not verify_policy_signature(policy, app.config.get("TAS_TRUSTED_KEYS", [])):
-            logger.error("Policy signature verification failed")
-            return jsonify({"error": "Policy signature verification failed"}), 400
-        logger.info("Policy signature verification successful")
+        # If the policy is signed, verify the signature unless enforcement is disabled in config
+        # Note: Even if the policy is signed, but TAS_ENFORCE_SIGNED_POLICIES is False, we will
+        # allow it but log a warning that signature verification is not enforced.
+        if not app.config.get("TAS_ENFORCE_SIGNED_POLICIES", True):
+            logger.warning(
+                "Signed policy not verified - policy signature check is disabled"
+            )
+            warning_message = "WARNING: Signed policy not verified - policy signature check is disabled"
+        else:
+            if not verify_policy_signature(
+                policy, app.config.get("TAS_TRUSTED_KEYS", [])
+            ):
+                logger.error("Policy signature verification failed")
+                return jsonify({"error": "Policy signature verification failed"}), 400
+            logger.info("Policy signature verification successful")
 
     try:
         # Store the policy in Redis with a descriptive key

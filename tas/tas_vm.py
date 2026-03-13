@@ -436,24 +436,29 @@ def get_policy_from_redis(redis_client: redis.StrictRedis, policy_key: str):
             logger.error(f"Policy '{policy_key}' is not signed and signing is required")
             raise ValueError("Policy not signed")
         else:
-            logger.warning(f"WARNING: Policy '{policy_key}' is not signed")
+            logger.warning(f"Policy '{policy_key}' is not signed")
     else:
-        # Verify policy signature
-        logger.info("Verifying policy signature")
-
-        signature_valid = verify_policy_signature(
-            policy_json, current_app.config.get("TAS_TRUSTED_KEYS", [])
-        )
-
-        if not signature_valid:
-            logger.error(
-                f"Policy signature verification failed for policy '{policy_key}'"
+        if not current_app.config.get("TAS_ENFORCE_SIGNED_POLICIES", True):
+            logger.warning(
+                f"Policy '{policy_key}' is signed but signature verification is disabled in configuration"
             )
-            raise ValueError("Policy signature verification failed")
         else:
-            logger.info(
-                f"Policy signature verification successful for policy '{policy_key}'"
+            # Verify policy signature
+            logger.info("Verifying policy signature")
+
+            signature_valid = verify_policy_signature(
+                policy_json, current_app.config.get("TAS_TRUSTED_KEYS", [])
             )
+
+            if not signature_valid:
+                logger.error(
+                    f"Policy signature verification failed for policy '{policy_key}'"
+                )
+                raise ValueError("Policy signature verification failed")
+            else:
+                logger.info(
+                    f"Policy signature verification successful for policy '{policy_key}'"
+                )
     return policy_json
 
 
