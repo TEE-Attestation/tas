@@ -74,15 +74,33 @@ jobs:
 
       - name: run application for 1 second with flask
         run: |
-          timeout --preserve-status -k 1m -s SIGINT 1s flask run -h localhost -p ${{ matrix.port }}
+          setsid flask run --no-reload -h localhost -p ${{ matrix.port }} &
+          PID=$!
+          sleep 1
+          if ! kill -0 $PID 2>/dev/null; then
+            echo "Flask exited early — startup failure"
+            exit 1
+          fi
+          kill -- -$PID 2>/dev/null || true
+          sleep 1
           sudo ss --kill state listening src :${{ matrix.port }}
         env:
           APP_ENV: "production"
           DEBUG: "false"
           TAS_API_KEY: "our-secure-api-key-asdfg-12345-zxcvb-qwerty-lkjhg-56789-a1s23-56"
+      
       - name: run application for 1 second with gunicorn
         run: |
-          timeout --preserve-status -k 1m -s SIGINT 1s gunicorn -w 4 -b localhost:${{matrix.port}} app:app
+          setsid gunicorn -w 4 -b localhost:${{matrix.port}} app:app &
+          PID=$!
+          sleep 1
+          if ! kill -0 $PID 2>/dev/null; then
+            echo "Gunicorn exited early — startup failure"
+            exit 1
+          fi
+          kill -- -$PID 2>/dev/null || true
+          sleep 1
+          sudo ss --kill state listening src :${{ matrix.port }}
         env:
           APP_ENV: "production"
           DEBUG: "false"
