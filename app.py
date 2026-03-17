@@ -21,7 +21,11 @@ import redis
 from flask import Flask, jsonify, request
 
 from tas.config_loader import load_configuration
-from tas.policy_helper import verify_policy_signature
+from tas.policy_helper import (
+    POLICY_KEY_COMPONENT_RE,
+    validate_policy_key,
+    verify_policy_signature,
+)
 from tas.tas_logging import configure_external_logging, setup_logging
 from tas.tas_vm import vm_verify
 
@@ -385,10 +389,32 @@ def store_policy():
         logger.error("Policy store request missing policy_type")
         return jsonify({"error": "Policy type is required (e.g. SEV, TDX)"}), 400
 
+    if not POLICY_KEY_COMPONENT_RE.match(str(policy_type)):
+        logger.error(f"Invalid policy_type: {policy_type}")
+        return (
+            jsonify(
+                {
+                    "error": "Invalid policy_type. Use only alphanumeric characters, hyphens, underscores, and dots"
+                }
+            ),
+            400,
+        )
+
     key_id = data.get("key_id")
     if not key_id:
         logger.error("Policy store request missing key_id")
         return jsonify({"error": "Key ID is required"}), 400
+
+    if not POLICY_KEY_COMPONENT_RE.match(str(key_id)):
+        logger.error(f"Invalid key_id: {key_id}")
+        return (
+            jsonify(
+                {
+                    "error": "Invalid key_id. Use only alphanumeric characters, hyphens, underscores, and dots"
+                }
+            ),
+            400,
+        )
 
     policy = data.get("policy")
     if not policy:
@@ -477,6 +503,12 @@ def get_policy(policy_key):
     if auth_response:
         return auth_response
 
+    # Validate the policy key format
+    is_valid, error_message = validate_policy_key(policy_key)
+    if not is_valid:
+        logger.error(f"Invalid policy key '{policy_key}': {error_message}")
+        return jsonify({"error": error_message}), 400
+
     try:
         # Retrieve the policy from Redis
         logger.debug(f"Retrieving policy '{policy_key}' from Redis")
@@ -555,31 +587,36 @@ def list_policies():
 
 
 # Endpoint to delete a policy from Redis
-@app.route("/policy/v0/delete/<policy_name>", methods=["DELETE"])
-def delete_policy(policy_name):
+@app.route("/policy/v0/delete/<policy_key>", methods=["DELETE"])
+def delete_policy(policy_key):
     """
     Delete a security policy from Redis.
     """
     logger.info(
-        f"Received policy delete request for '{policy_name}' from {request.remote_addr}"
+        f"Received policy delete request for '{policy_key}' from {request.remote_addr}"
     )
     auth_response = authenticate_request()
     if auth_response:
         return auth_response
 
+    # Validate the policy key format
+    is_valid, error_message = validate_policy_key(policy_key)
+    if not is_valid:
+        logger.error(f"Invalid policy key '{policy_key}': {error_message}")
+        return jsonify({"error": error_message}), 400
+
     try:
         # Delete the policy from Redis
-        policy_key = f"policy:{policy_name}"
         logger.debug(f"Attempting to delete policy with key: {policy_key}")
         deleted_count = redis_client.delete(policy_key)
 
         if deleted_count == 0:
-            logger.warning(f"Policy '{policy_name}' not found for deletion")
-            return jsonify({"error": f"Policy '{policy_name}' not found"}), 404
+            logger.warning(f"Policy '{policy_key}' not found for deletion")
+            return jsonify({"error": f"Policy '{policy_key}' not found"}), 404
 
-        logger.info(f"Deleted policy '{policy_name}' from Redis")
+        logger.info(f"Deleted policy '{policy_key}' from Redis")
 
-        return jsonify({"message": f"Policy '{policy_name}' deleted successfully"}), 200
+        return jsonify({"message": f"Policy '{policy_key}' deleted successfully"}), 200
 
     except Exception as e:
         logger.error(f"Error deleting policy: {e}")

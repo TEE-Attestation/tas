@@ -12,6 +12,7 @@
 import base64
 import json
 import logging
+import re
 
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
@@ -133,3 +134,32 @@ def verify_policy_signature(policy_data, public_keys):
     except Exception as e:
         logger.error(f"Error during verification: {e}")
         return False
+
+
+# Regex for validating policy key components (type and key_id)
+# Only allows alphanumeric characters, hyphens, underscores, and dots.
+# Rejects Redis-special characters (*, ?, [, ], \) and whitespace.
+POLICY_KEY_COMPONENT_RE = re.compile(r"^[A-Za-z0-9_.-]+\Z")
+
+# Regex for validating a full policy key: policy:{type}:{key_id}
+POLICY_KEY_RE = re.compile(r"^policy:[A-Za-z0-9_-]+:[A-Za-z0-9_.-]+\Z")
+
+
+def validate_policy_key(policy_key):
+    """
+    Validate that a policy key matches the expected structure
+    'policy:{type}:{key_id}' and contains no dangerous characters.
+
+    Returns (True, None) if valid, (False, error_message) if not.
+    """
+    if not policy_key or not isinstance(policy_key, str):
+        return False, "Policy key is required"
+
+    if not POLICY_KEY_RE.match(policy_key):
+        return False, (
+            "Invalid policy key format. "
+            "Expected format: 'policy:{type}:{key_id}' "
+            "using only alphanumeric characters, hyphens, underscores, and dots"
+        )
+
+    return True, None
