@@ -11,7 +11,6 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        # seeing import error on 3.14 so not including for now
         python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
         include:
           - python-version: "3.10"
@@ -74,7 +73,7 @@ jobs:
 
       - name: run application for 1 second with flask
         run: |
-          setsid flask run --no-reload -h localhost -p ${{ matrix.port }} &
+          setsid flask run --no-reload -h localhost -p ${{ matrix.port }} 2>&1 &
           PID=$!
           sleep 1
           if ! kill -0 $PID 2>/dev/null; then

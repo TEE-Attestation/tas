@@ -8,6 +8,10 @@
 name = "TAS"
 version = "0.1.0-alpha"
 
+[tool.isort]
+profile = "black"
+known_third_party = ["sev_pytools", "tdx_pytools"]
+
 [tool.pytest.ini_options]
 addopts = [
     "--import-mode=importlib",
