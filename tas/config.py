@@ -35,6 +35,10 @@ class BaseConfig:
     TAS_VERSION = "0.1.0"
     TAS_API_KEY = os.getenv("TAS_API_KEY", "")
     TAS_API_KEY_MIN_LENGTH = int(os.getenv("TAS_API_KEY_MIN_LENGTH", "64"))
+    TAS_MANAGEMENT_API_KEY = os.getenv("TAS_MANAGEMENT_API_KEY", "")
+    TAS_MANAGEMENT_API_KEY_MIN_LENGTH = int(
+        os.getenv("TAS_MANAGEMENT_API_KEY_MIN_LENGTH", "64")
+    )
     TAS_NONCE_EXPIRATION_SECONDS = int(os.getenv("TAS_NONCE_EXPIRATION_SECONDS", "120"))
     TAS_REDIS_HOST = os.getenv("TAS_REDIS_HOST", "localhost")
     TAS_REDIS_PORT = int(os.getenv("TAS_REDIS_PORT", "6379"))

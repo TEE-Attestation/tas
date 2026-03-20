@@ -28,6 +28,7 @@ export TAS_CONFIG_CLASS=config.ProductionConfig
 - Use the exact key name; examples:
 ```bash
 export TAS_API_KEY='replace-with-a-strong-key-at-least-64-chars'
+export TAS_MANAGEMENT_API_KEY='replace-with-a-strong-management-key-64-chars'
 export TAS_NONCE_EXPIRATION_SECONDS=180
 export TAS_REDIS_HOST='redis.internal'
 export TAS_REDIS_PORT=6380
@@ -118,6 +119,8 @@ Stored in Flask's config; set directly via env without prefix:
 | TAS_VERSION | str | `"0.1.0"` | No | Application version string returned by the `/version` endpoint. |
 | TAS_API_KEY | str | `""` | **Yes** | Shared secret used to authenticate every API request. Must be at least `TAS_API_KEY_MIN_LENGTH` characters long. |
 | TAS_API_KEY_MIN_LENGTH | int | `64` | No | Minimum number of characters required for `TAS_API_KEY`. The application refuses to start if the API key is shorter than this value. |
+| TAS_MANAGEMENT_API_KEY | str | `""` | **Yes** | Shared secret used to authenticate management API requests (policy CRUD). Must be at least `TAS_MANAGEMENT_API_KEY_MIN_LENGTH` characters long. Sent via the `X-MANAGEMENT-API-KEY` header. |
+| TAS_MANAGEMENT_API_KEY_MIN_LENGTH | int | `64` | No | Minimum number of characters required for `TAS_MANAGEMENT_API_KEY`. The application refuses to start if the management key is shorter than this value. |
 | TAS_NONCE_EXPIRATION_SECONDS | int | `120` | No | Number of seconds a nonce remains valid after creation. Nonces older than this are rejected during attestation verification. |
 | TAS_REDIS_HOST | str | `"localhost"` | No | Hostname or IP address of the Redis server used for nonce storage, certificate caching, and policy storage. |
 | TAS_REDIS_PORT | int | `6379` | No | Port number of the Redis server. |
@@ -151,6 +154,7 @@ These live under `app.config["TAS"]` as a nested dictionary. Set them in the YAM
 ### Validation at startup
 
 - **TAS_API_KEY** is required and must be at least `TAS_API_KEY_MIN_LENGTH` characters long. The application raises a `RuntimeError` and refuses to start otherwise.
+- **TAS_MANAGEMENT_API_KEY** is required and must be at least `TAS_MANAGEMENT_API_KEY_MIN_LENGTH` characters long. The application raises a `RuntimeError` and refuses to start otherwise.
 - **TAS_POLICY_TRUST**, if set, must point to a path containing at least one valid PEM certificate. If no valid keys can be loaded and signed-policy enforcement is enabled, the application raises a `RuntimeError`.
 - **TAS_ENFORCE_SIGNED_POLICIES** defaults to `true`. Setting it to `false` disables all policy signature checks. This means:
   - Unsigned policies are accepted without error.
@@ -178,6 +182,7 @@ export TAS_PLUGIN_PREFIX=tas_kbm
 export TAS_EXTRA_PLUGIN_DIR=/opt/tas/plugins
 export TAS_POLICY_TRUST=./certs/policy
 export TAS_API_KEY='...(>=64 chars)...'
+export TAS_MANAGEMENT_API_KEY='...(>=64 chars)...'
 ```
 
 ## Run TAS with ProductionConfig or DevelopmentConfig
@@ -189,6 +194,7 @@ flask:
 export TAS_CONFIG_CLASS=config.ProductionConfig
 # or: export TAS_CONFIG_CLASS=config.DevelopmentConfig
 export TAS_API_KEY='...>= TAS_API_KEY_MIN_LENGTH...'
+export TAS_MANAGEMENT_API_KEY='...>= TAS_MANAGEMENT_API_KEY_MIN_LENGTH...'
 flask run -h 0.0.0.0 -p 5000
 ```
 
@@ -196,6 +202,7 @@ gunicorn:
 ```bash
 export TAS_CONFIG_CLASS=config.ProductionConfig
 export TAS_API_KEY='...'
+export TAS_MANAGEMENT_API_KEY='...'
 gunicorn -w 4 -b 0.0.0.0:5000 app:app
 ```
 
