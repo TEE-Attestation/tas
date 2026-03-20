@@ -20,12 +20,10 @@ import time
 import redis
 from flask import Flask, jsonify, request
 
+from tas.auth import authenticate_request, init_client_auth, init_management_auth
 from tas.config_loader import load_configuration
-from tas.policy_helper import (
-    POLICY_KEY_COMPONENT_RE,
-    validate_policy_key,
-    verify_policy_signature,
-)
+from tas.deprecated_routes import deprecated_policy_bp
+from tas.management_routes import management_bp
 from tas.tas_logging import configure_external_logging, setup_logging
 from tas.tas_vm import vm_verify
 
@@ -38,6 +36,10 @@ logger.debug("Loading in config")
 
 # Load configuration
 load_configuration(app)
+
+# Initialise authentication
+init_client_auth(app)
+init_management_auth(app)
 
 # Reconfigure logging with settings from config if available
 tas_config = app.config.get("TAS", {})
@@ -151,6 +153,13 @@ except redis.ConnectionError as e:
 except Exception as e:
     raise RuntimeError(f"An unexpected error occurred while initializing Redis: {e}")
 
+# Expose Redis client to blueprints
+app.extensions["redis"] = redis_client
+
+# Register blueprints
+app.register_blueprint(management_bp)
+app.register_blueprint(deprecated_policy_bp)
+
 # log discovered plugins for debugging
 logger.debug("Discovered plugins:")
 tas_kbm_plugin = None
@@ -218,16 +227,6 @@ def validate_nonce(nonce):
     logger.debug("Nonce validation successful, removing from Redis")
     redis_client.delete(nonce)  # Remove nonce after successful validation
     return True, None
-
-
-# Function to check API key
-def authenticate_request():
-    api_key = request.headers.get("X-API-KEY")
-    if api_key != TAS_API_KEY:
-        logger.warning(
-            f"Unauthorized request from {request.remote_addr}: Invalid API key"
-        )
-        return jsonify({"error": "Unauthorized"}), 401
 
 
 # Endpoint to generate and send a nonce
@@ -342,285 +341,6 @@ def get_secret():
     # Return the secret
     logger.info(f"Successfully completed secret request for {request.remote_addr}")
     return jsonify({"secret_key": secret})
-
-
-# Endpoint to store a policy in Redis
-@app.route("/policy/v0/store", methods=["POST"])
-def store_policy():
-    """
-    Store a security policy in Redis for later use in attestation validation.
-
-    Expected JSON payload:
-    {
-        "policy_type": "SEV|TDX",
-        "key_id": "my-key-1",
-        "policy": {
-            "metadata": {
-                "name": "My Security Policy",
-                "version": "1.0",
-                "description": "Custom security policy"
-            },
-            "validation_rules": {
-                "host_data": {
-                    "exact_match": "..."
-                },
-                "policy": {
-                    "debug_allowed": false,
-                    "migrate_ma_allowed": false
-                }
-            }
-        }
-    }
-    """
-    logger.info(f"Received policy store request from {request.remote_addr}")
-    auth_response = authenticate_request()
-    if auth_response:
-        return auth_response
-
-    # Get the JSON data from the request
-    data = request.get_json()
-    if not data:
-        logger.error("Policy store request missing JSON body")
-        return jsonify({"error": "Request body is required"}), 400
-
-    # Validate required fields
-    policy_type = data.get("policy_type")
-    if not policy_type:
-        logger.error("Policy store request missing policy_type")
-        return jsonify({"error": "Policy type is required (e.g. SEV, TDX)"}), 400
-
-    if not POLICY_KEY_COMPONENT_RE.match(str(policy_type)):
-        logger.error(f"Invalid policy_type: {policy_type}")
-        return (
-            jsonify(
-                {
-                    "error": "Invalid policy_type. Use only alphanumeric characters, hyphens, underscores, and dots"
-                }
-            ),
-            400,
-        )
-
-    key_id = data.get("key_id")
-    if not key_id:
-        logger.error("Policy store request missing key_id")
-        return jsonify({"error": "Key ID is required"}), 400
-
-    if not POLICY_KEY_COMPONENT_RE.match(str(key_id)):
-        logger.error(f"Invalid key_id: {key_id}")
-        return (
-            jsonify(
-                {
-                    "error": "Invalid key_id. Use only alphanumeric characters, hyphens, underscores, and dots"
-                }
-            ),
-            400,
-        )
-
-    policy = data.get("policy")
-    if not policy:
-        logger.error("Policy store request missing policy data")
-        return jsonify({"error": "Policy data is required"}), 400
-
-    # Validate policy structure
-    if not isinstance(policy, dict):
-        logger.error("Policy data is not a valid JSON object")
-        return jsonify({"error": "Policy must be a JSON object"}), 400
-
-    # Check for required policy sections
-    if "metadata" not in policy:
-        logger.error("Policy missing required 'metadata' section")
-        return jsonify({"error": "Policy must contain 'metadata' section"}), 400
-
-    if "validation_rules" not in policy:
-        logger.error("Policy missing required 'validation_rules' section")
-        return jsonify({"error": "Policy must contain 'validation_rules' section"}), 400
-
-    # Check if policy is signed
-    is_signed = "signature" in policy
-    warning_message = None
-    if not is_signed:
-        logger.warning(f"Policy {policy_type}:{key_id} is not signed")
-        warning_message = (
-            "WARNING: Policy is not signed and cannot be verified for integrity"
-        )
-        if app.config.get("TAS_ENFORCE_SIGNED_POLICIES", True):
-            logger.error("Unsigned policies are not allowed by configuration")
-            return (
-                jsonify(
-                    {"error": "Unsigned policies are not allowed by configuration"}
-                ),
-                400,
-            )
-    else:
-        logger.info(f"Policy {policy_type}:{key_id} is signed")
-        # If the policy is signed, verify the signature unless enforcement is disabled in config
-        # Note: Even if the policy is signed, but TAS_ENFORCE_SIGNED_POLICIES is False, we will
-        # allow it but log a warning that signature verification is not enforced.
-        if not app.config.get("TAS_ENFORCE_SIGNED_POLICIES", True):
-            logger.warning(
-                "Signed policy not verified - policy signature check is disabled"
-            )
-            warning_message = "WARNING: Signed policy not verified - policy signature check is disabled"
-        else:
-            if not verify_policy_signature(
-                policy, app.config.get("TAS_TRUSTED_KEYS", [])
-            ):
-                logger.error("Policy signature verification failed")
-                return jsonify({"error": "Policy signature verification failed"}), 400
-            logger.info("Policy signature verification successful")
-
-    try:
-        # Store the policy in Redis with a descriptive key
-        policy_key = f"policy:{policy_type}:{key_id}"
-        policy_json = json.dumps(policy)
-
-        # Store with no expiration (policies should persist)
-        redis_client.set(policy_key, policy_json)
-
-        logger.info(f"Stored policy '{policy_key}' in Redis")
-
-        response_data = {"message": f"Policy '{policy_key}' stored successfully"}
-        if warning_message:
-            response_data["warning"] = warning_message
-
-        return jsonify(response_data), 201
-
-    except Exception as e:
-        logger.error(f"Error storing policy: {e}")
-        return jsonify({"error": "Failed to store policy in Redis"}), 500
-
-
-# Endpoint to retrieve a policy from Redis
-@app.route("/policy/v0/get/<policy_key>", methods=["GET"])
-def get_policy(policy_key):
-    """
-    Retrieve a security policy from Redis.
-    """
-    logger.info(
-        f"Received policy get request for '{policy_key}' from {request.remote_addr}"
-    )
-    auth_response = authenticate_request()
-    if auth_response:
-        return auth_response
-
-    # Validate the policy key format
-    is_valid, error_message = validate_policy_key(policy_key)
-    if not is_valid:
-        logger.error(f"Invalid policy key '{policy_key}': {error_message}")
-        return jsonify({"error": error_message}), 400
-
-    try:
-        # Retrieve the policy from Redis
-        logger.debug(f"Retrieving policy '{policy_key}' from Redis")
-        policy_json = redis_client.get(policy_key)
-
-        if not policy_json:
-            logger.warning(f"Policy '{policy_key}' not found in Redis")
-            return jsonify({"error": f"Policy '{policy_key}' not found"}), 404
-
-        policy = json.loads(policy_json)
-        logger.info(f"Successfully retrieved policy '{policy_key}'")
-
-        # Check if policy is signed and add warning if not
-        response_data = {"policy_key": policy_key, "policy": policy}
-        if "signature" not in policy:
-            logger.warning(f"Retrieved policy '{policy_key}' is not signed")
-            response_data[
-                "warning"
-            ] = "WARNING: Policy is not signed and cannot be verified for integrity"
-
-        return jsonify(response_data), 200
-
-    except json.JSONDecodeError as e:
-        logger.error(f"Error parsing policy JSON: {e}")
-        return jsonify({"error": "Invalid policy data in Redis"}), 500
-    except Exception as e:
-        logger.error(f"Error retrieving policy: {e}")
-        return jsonify({"error": "Failed to retrieve policy from Redis"}), 500
-
-
-# Endpoint to list all stored policies
-@app.route("/policy/v0/list", methods=["GET"])
-def list_policies():
-    """
-    List all stored policies in Redis.
-    """
-    logger.info(f"Received policy list request from {request.remote_addr}")
-    auth_response = authenticate_request()
-    if auth_response:
-        return auth_response
-
-    try:
-        # Get all policy keys from Redis
-        logger.debug("Retrieving all policy keys from Redis")
-        policy_keys = redis_client.keys("policy:*")
-        logger.debug(f"Found {len(policy_keys)} policy keys in Redis")
-
-        policies = []
-        for key in policy_keys:
-            policy_json = redis_client.get(key)
-
-            if policy_json:
-                try:
-                    policy = json.loads(policy_json)
-                    metadata = policy.get("metadata", {})
-                    policy_info = {
-                        "policy_key": key,
-                        "name": metadata.get("name", "Unknown"),
-                        "version": metadata.get("version", "Unknown"),
-                        "description": metadata.get("description", "No description"),
-                        "signed": "signature" in policy,
-                    }
-                    policies.append(policy_info)
-                    logger.debug(f"Added policy to list: {key}")
-                except json.JSONDecodeError:
-                    # Skip invalid policies
-                    logger.warning(f"Skipping invalid policy with key: {key}")
-                    continue
-
-        logger.info(f"Successfully listed {len(policies)} policies")
-        return jsonify({"policies": policies, "count": len(policies)}), 200
-
-    except Exception as e:
-        logger.error(f"Error listing policies: {e}")
-        return jsonify({"error": "Failed to list policies"}), 500
-
-
-# Endpoint to delete a policy from Redis
-@app.route("/policy/v0/delete/<policy_key>", methods=["DELETE"])
-def delete_policy(policy_key):
-    """
-    Delete a security policy from Redis.
-    """
-    logger.info(
-        f"Received policy delete request for '{policy_key}' from {request.remote_addr}"
-    )
-    auth_response = authenticate_request()
-    if auth_response:
-        return auth_response
-
-    # Validate the policy key format
-    is_valid, error_message = validate_policy_key(policy_key)
-    if not is_valid:
-        logger.error(f"Invalid policy key '{policy_key}': {error_message}")
-        return jsonify({"error": error_message}), 400
-
-    try:
-        # Delete the policy from Redis
-        logger.debug(f"Attempting to delete policy with key: {policy_key}")
-        deleted_count = redis_client.delete(policy_key)
-
-        if deleted_count == 0:
-            logger.warning(f"Policy '{policy_key}' not found for deletion")
-            return jsonify({"error": f"Policy '{policy_key}' not found"}), 404
-
-        logger.info(f"Deleted policy '{policy_key}' from Redis")
-
-        return jsonify({"message": f"Policy '{policy_key}' deleted successfully"}), 200
-
-    except Exception as e:
-        logger.error(f"Error deleting policy: {e}")
-        return jsonify({"error": "Failed to delete policy from Redis"}), 500
 
 
 # Endpoint to retrieve the version information

@@ -27,6 +27,12 @@
         "in": "header",
         "name": "X-API-KEY",
         "description": "API key for authentication"
+      },
+      "ManagementApiKeyAuth": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-MANAGEMENT-API-KEY",
+        "description": "Management API key for policy administration"
       }
     },
     "schemas": {
@@ -250,6 +256,34 @@
           "version"
         ]
       }
+    },
+    "headers": {
+      "Deprecation": {
+        "description": "Indicates the endpoint is deprecated (RFC 8594)",
+        "schema": {
+          "type": "string",
+          "example": "true"
+        }
+      },
+      "Sunset": {
+        "description": "Date after which the endpoint will be removed (RFC 8594, RFC 7231 IMF-fixdate)",
+        "schema": {
+          "type": "string",
+          "example": "Tue, 31 Mar 2026 23:59:59 GMT"
+        }
+      },
+      "Link": {
+        "description": "Link to the replacement endpoint",
+        "schema": {
+          "type": "string"
+        }
+      },
+      "Warning": {
+        "description": "Human-readable deprecation warning",
+        "schema": {
+          "type": "string"
+        }
+      }
     }
   },
   "paths": {
@@ -358,13 +392,465 @@
     "/policy/v0/store": {
       "post": {
         "tags": [
+          "Policy Management (Deprecated)"
+        ],
+        "summary": "Store a security policy",
+        "description": "Stores a security policy for later use in attestation validation Deprecated: will be removed after 31 March 2026. Use /management/policy/v0/* endpoints instead.",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PolicyStoreRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Policy stored successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string"
+                    },
+                    "warning": {
+                      "type": "string"
+                    },
+                    "deprecation_warning": {
+                      "type": "string",
+                      "description": "Deprecation notice for this endpoint"
+                    }
+                  }
+                }
+              }
+            },
+            "headers": {
+              "Deprecation": {
+                "$ref": "#/components/headers/Deprecation"
+              },
+              "Sunset": {
+                "$ref": "#/components/headers/Sunset"
+              },
+              "Link": {
+                "$ref": "#/components/headers/Link"
+              },
+              "Warning": {
+                "$ref": "#/components/headers/Warning"
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request - Invalid policy data",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "headers": {
+              "Deprecation": {
+                "$ref": "#/components/headers/Deprecation"
+              },
+              "Sunset": {
+                "$ref": "#/components/headers/Sunset"
+              },
+              "Link": {
+                "$ref": "#/components/headers/Link"
+              },
+              "Warning": {
+                "$ref": "#/components/headers/Warning"
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "headers": {
+              "Deprecation": {
+                "$ref": "#/components/headers/Deprecation"
+              },
+              "Sunset": {
+                "$ref": "#/components/headers/Sunset"
+              },
+              "Link": {
+                "$ref": "#/components/headers/Link"
+              },
+              "Warning": {
+                "$ref": "#/components/headers/Warning"
+              }
+            }
+          }
+        },
+        "deprecated": true
+      }
+    },
+    "/policy/v0/get/{policy_key}": {
+      "get": {
+        "tags": [
+          "Policy Management (Deprecated)"
+        ],
+        "summary": "Get a security policy",
+        "description": "Retrieves a stored security policy by key Deprecated: will be removed after 31 March 2026. Use /management/policy/v0/* endpoints instead.",
+        "security": [
+          {
+            "ManagementApiKeyAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "policy_key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Policy key to retrieve"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Policy retrieved successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "policy_key": {
+                      "type": "string"
+                    },
+                    "policy": {
+                      "$ref": "#/components/schemas/PolicyData"
+                    },
+                    "warning": {
+                      "type": "string"
+                    },
+                    "deprecation_warning": {
+                      "type": "string",
+                      "description": "Deprecation notice for this endpoint"
+                    }
+                  }
+                }
+              }
+            },
+            "headers": {
+              "Deprecation": {
+                "$ref": "#/components/headers/Deprecation"
+              },
+              "Sunset": {
+                "$ref": "#/components/headers/Sunset"
+              },
+              "Link": {
+                "$ref": "#/components/headers/Link"
+              },
+              "Warning": {
+                "$ref": "#/components/headers/Warning"
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "headers": {
+              "Deprecation": {
+                "$ref": "#/components/headers/Deprecation"
+              },
+              "Sunset": {
+                "$ref": "#/components/headers/Sunset"
+              },
+              "Link": {
+                "$ref": "#/components/headers/Link"
+              },
+              "Warning": {
+                "$ref": "#/components/headers/Warning"
+              }
+            }
+          },
+          "404": {
+            "description": "Policy not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "headers": {
+              "Deprecation": {
+                "$ref": "#/components/headers/Deprecation"
+              },
+              "Sunset": {
+                "$ref": "#/components/headers/Sunset"
+              },
+              "Link": {
+                "$ref": "#/components/headers/Link"
+              },
+              "Warning": {
+                "$ref": "#/components/headers/Warning"
+              }
+            }
+          }
+        },
+        "deprecated": true
+      }
+    },
+    "/policy/v0/list": {
+      "get": {
+        "tags": [
+          "Policy Management (Deprecated)"
+        ],
+        "summary": "List all policies",
+        "description": "Lists all stored security policies Deprecated: will be removed after 31 March 2026. Use /management/policy/v0/* endpoints instead.",
+        "security": [
+          {
+            "ManagementApiKeyAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Policies listed successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "policies": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "policy_key": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "version": {
+                            "type": "string"
+                          },
+                          "description": {
+                            "type": "string"
+                          },
+                          "signed": {
+                            "type": "boolean"
+                          }
+                        }
+                      }
+                    },
+                    "count": {
+                      "type": "integer"
+                    },
+                    "deprecation_warning": {
+                      "type": "string",
+                      "description": "Deprecation notice for this endpoint"
+                    }
+                  }
+                }
+              }
+            },
+            "headers": {
+              "Deprecation": {
+                "$ref": "#/components/headers/Deprecation"
+              },
+              "Sunset": {
+                "$ref": "#/components/headers/Sunset"
+              },
+              "Link": {
+                "$ref": "#/components/headers/Link"
+              },
+              "Warning": {
+                "$ref": "#/components/headers/Warning"
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "headers": {
+              "Deprecation": {
+                "$ref": "#/components/headers/Deprecation"
+              },
+              "Sunset": {
+                "$ref": "#/components/headers/Sunset"
+              },
+              "Link": {
+                "$ref": "#/components/headers/Link"
+              },
+              "Warning": {
+                "$ref": "#/components/headers/Warning"
+              }
+            }
+          }
+        },
+        "deprecated": true
+      }
+    },
+    "/policy/v0/delete/{policy_name}": {
+      "delete": {
+        "tags": [
+          "Policy Management (Deprecated)"
+        ],
+        "summary": "Delete a security policy",
+        "description": "Deletes a stored security policy Deprecated: will be removed after 31 March 2026. Use /management/policy/v0/* endpoints instead.",
+        "security": [
+          {
+            "ManagementApiKeyAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "policy_name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Policy name to delete"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Policy deleted successfully",
+            "headers": {
+              "Deprecation": {
+                "$ref": "#/components/headers/Deprecation"
+              },
+              "Sunset": {
+                "$ref": "#/components/headers/Sunset"
+              },
+              "Link": {
+                "$ref": "#/components/headers/Link"
+              },
+              "Warning": {
+                "$ref": "#/components/headers/Warning"
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "headers": {
+              "Deprecation": {
+                "$ref": "#/components/headers/Deprecation"
+              },
+              "Sunset": {
+                "$ref": "#/components/headers/Sunset"
+              },
+              "Link": {
+                "$ref": "#/components/headers/Link"
+              },
+              "Warning": {
+                "$ref": "#/components/headers/Warning"
+              }
+            }
+          },
+          "404": {
+            "description": "Policy not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "headers": {
+              "Deprecation": {
+                "$ref": "#/components/headers/Deprecation"
+              },
+              "Sunset": {
+                "$ref": "#/components/headers/Sunset"
+              },
+              "Link": {
+                "$ref": "#/components/headers/Link"
+              },
+              "Warning": {
+                "$ref": "#/components/headers/Warning"
+              }
+            }
+          }
+        },
+        "deprecated": true
+      }
+    },
+    "/version": {
+      "get": {
+        "tags": [
+          "System"
+        ],
+        "summary": "Get TAS version",
+        "description": "Returns the current version of the TEE Attestation Service",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Version information",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VersionResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/management/policy/v0/store": {
+      "post": {
+        "tags": [
           "Policy Management"
         ],
         "summary": "Store a security policy",
         "description": "Stores a security policy for later use in attestation validation",
         "security": [
           {
-            "ApiKeyAuth": []
+            "ManagementApiKeyAuth": []
           }
         ],
         "requestBody": {
@@ -407,7 +893,7 @@
             }
           },
           "401": {
-            "description": "Unauthorized",
+            "description": "Unauthorized - Invalid management API key",
             "content": {
               "application/json": {
                 "schema": {
@@ -419,7 +905,7 @@
         }
       }
     },
-    "/policy/v0/get/{policy_key}": {
+    "/management/policy/v0/get/{policy_key}": {
       "get": {
         "tags": [
           "Policy Management"
@@ -428,7 +914,7 @@
         "description": "Retrieves a stored security policy by key",
         "security": [
           {
-            "ApiKeyAuth": []
+            "ManagementApiKeyAuth": []
           }
         ],
         "parameters": [
@@ -487,7 +973,7 @@
         }
       }
     },
-    "/policy/v0/list": {
+    "/management/policy/v0/list": {
       "get": {
         "tags": [
           "Policy Management"
@@ -496,7 +982,7 @@
         "description": "Lists all stored security policies",
         "security": [
           {
-            "ApiKeyAuth": []
+            "ManagementApiKeyAuth": []
           }
         ],
         "responses": {
@@ -551,7 +1037,7 @@
         }
       }
     },
-    "/policy/v0/delete/{policy_name}": {
+    "/management/policy/v0/delete/{policy_key}": {
       "delete": {
         "tags": [
           "Policy Management"
@@ -560,18 +1046,18 @@
         "description": "Deletes a stored security policy",
         "security": [
           {
-            "ApiKeyAuth": []
+            "ManagementApiKeyAuth": []
           }
         ],
         "parameters": [
           {
-            "name": "policy_name",
+            "name": "policy_key",
             "in": "path",
             "required": true,
             "schema": {
               "type": "string"
             },
-            "description": "Policy name to delete"
+            "description": "Policy key to delete"
           }
         ],
         "responses": {
@@ -590,42 +1076,6 @@
           },
           "404": {
             "description": "Policy not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/version": {
-      "get": {
-        "tags": [
-          "System"
-        ],
-        "summary": "Get TAS version",
-        "description": "Returns the current version of the TEE Attestation Service",
-        "security": [
-          {
-            "ApiKeyAuth": []
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Version information",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/VersionResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Unauthorized",
             "content": {
               "application/json": {
                 "schema": {

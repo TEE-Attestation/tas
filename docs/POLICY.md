@@ -22,6 +22,10 @@ TAS policies define the security requirements that TEE attestation evidence must
 
 Policies are stored in Redis and referenced during attestation validation to determine if TEE evidence meets the required security standards.
 
+> **Deprecation Notice**: The `/policy/v0/*` endpoints are deprecated and will be removed after **31 March 2026**.
+> All policy management operations should use the new `/management/policy/v0/*` endpoints with the `X-MANAGEMENT-API-KEY` header.
+> See the [Registering Policies](#registering-policies) section for updated examples.
+
 ## Policy Structure
 
 ### Example Policy Format
@@ -209,6 +213,8 @@ python3 demo_signer.py --cert your-policy.json
 
 To register a policy with TAS, you must wrap your **signed policy from the previous step** in a registration payload. This payload specifies the policy type and associates it with a secret ID.
 
+Policy registration uses the **management API**, which requires the `X-MANAGEMENT-API-KEY` header (separate from the client `X-API-KEY`).
+
 ### Registration Payload Format
 
 **Important:** The `policy` field contains your complete signed policy from Step 2 above (including metadata, validation_rules, and signature).
@@ -260,13 +266,13 @@ Example: `policy:SEV:my-secret-id`
 ### Using curl
 
 ```bash
-# Set your API key
-export TAS_API_KEY="your-api-key-here"
+# Set your management API key
+export TAS_MANAGEMENT_API_KEY="your-management-api-key-here"
 
-# Register the signed policy
-curl -X POST http://localhost:5001/policy/v0/store \
+# Register the signed policy (management API)
+curl -X POST http://localhost:5001/management/policy/v0/store \
   -H "Content-Type: application/json" \
-  -H "X-API-KEY: $TAS_API_KEY" \
+  -H "X-MANAGEMENT-API-KEY: $TAS_MANAGEMENT_API_KEY" \
   -d  '{
     "policy_type": "SEV",
     "key_id": "...",
@@ -396,9 +402,9 @@ Error: Policy must contain 'validation_rules' section
 # Verify policy syntax
 python3 -m json.tool my-policy.json
 
-# List registered policies
-curl -H "X-API-KEY: $TAS_API_KEY" http://localhost:5001/policy/v0/list
+# List registered policies (management API)
+curl -H "X-MANAGEMENT-API-KEY: $TAS_MANAGEMENT_API_KEY" http://localhost:5001/management/policy/v0/list
 
-# Get specific policy
-curl -H "X-API-KEY: $TAS_API_KEY" http://localhost:5001/policy/v0/get/policy:SNP:my-policy-id
+# Get specific policy (management API)
+curl -H "X-MANAGEMENT-API-KEY: $TAS_MANAGEMENT_API_KEY" http://localhost:5001/management/policy/v0/get/policy:SNP:my-policy-id
 ```

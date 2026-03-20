@@ -90,6 +90,7 @@ jobs:
           APP_ENV: "production"
           DEBUG: "false"
           TAS_API_KEY: "our-secure-api-key-asdfg-12345-zxcvb-qwerty-lkjhg-56789-a1s23-56"
+          TAS_MANAGEMENT_API_KEY:  "mgmt-our-secure-api-key-asdfg-12345-zxcvb-qwerty-lkjhg-56789-a1s23-56"
       
       - name: run application for 1 second with gunicorn
         run: |
@@ -107,3 +108,4 @@ jobs:
           APP_ENV: "production"
           DEBUG: "false"
           TAS_API_KEY: "our-secure-api-key-asdfg-12345-zxcvb-qwerty-lkjhg-56789-a1s23-56"
+          TAS_MANAGEMENT_API_KEY: "mgmt-our-secure-api-key-asdfg-12345-zxcvb-qwerty-lkjhg-56789-a1s23-56"

@@ -29,6 +29,8 @@ KNOWN_TAS_KEYS = {
     "TAS_VERSION",
     "TAS_API_KEY",
     "TAS_API_KEY_MIN_LENGTH",
+    "TAS_MANAGEMENT_API_KEY",
+    "TAS_MANAGEMENT_API_KEY_MIN_LENGTH",
     "TAS_NONCE_EXPIRATION_SECONDS",
     "TAS_REDIS_HOST",
     "TAS_REDIS_PORT",
@@ -302,6 +304,19 @@ def load_configuration(app):
         )
         raise RuntimeError(
             f"TAS_API_KEY must be at least {app.config['TAS_API_KEY_MIN_LENGTH']} characters long"
+        )
+
+    # Validate management API key
+    mgmt_api_key = app.config.get("TAS_MANAGEMENT_API_KEY", "")
+    if not mgmt_api_key:
+        logger.error("TAS_MANAGEMENT_API_KEY is not set")
+        raise RuntimeError("TAS_MANAGEMENT_API_KEY environment variable is not set")
+    if len(mgmt_api_key) < app.config["TAS_MANAGEMENT_API_KEY_MIN_LENGTH"]:
+        logger.error(
+            f"TAS_MANAGEMENT_API_KEY length {len(mgmt_api_key)} is less than required minimum {app.config['TAS_MANAGEMENT_API_KEY_MIN_LENGTH']}"
+        )
+        raise RuntimeError(
+            f"TAS_MANAGEMENT_API_KEY must be at least {app.config['TAS_MANAGEMENT_API_KEY_MIN_LENGTH']} characters long"
         )
 
     logger.debug("Loading trusted keys for policy verification")

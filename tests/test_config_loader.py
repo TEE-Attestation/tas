@@ -20,6 +20,7 @@ from flask import Flask
 from tas.config_loader import load_configuration
 
 LONG_API_KEY = "a" * 64
+LONG_MGMT_KEY = "b" * 64
 
 
 def new_app():
@@ -57,6 +58,7 @@ def test_api_key_min_length(monkeypatch):
 
 def test_flask_env_overrides(monkeypatch):
     monkeypatch.setenv("TAS_API_KEY", LONG_API_KEY)
+    monkeypatch.setenv("TAS_MANAGEMENT_API_KEY", LONG_MGMT_KEY)
     monkeypatch.setenv("FLASK_DEBUG", "true")
     monkeypatch.setenv("FLASK_JSON_SORT_KEYS", "false")
     app = new_app()
@@ -67,6 +69,7 @@ def test_flask_env_overrides(monkeypatch):
 
 def test_tas_direct_env_overrides(monkeypatch):
     monkeypatch.setenv("TAS_API_KEY", LONG_API_KEY)
+    monkeypatch.setenv("TAS_MANAGEMENT_API_KEY", LONG_MGMT_KEY)
     monkeypatch.setenv("TAS_REDIS_HOST", "redis.internal")
     monkeypatch.setenv("TAS_REDIS_PORT", "6380")
     app = new_app()
@@ -90,6 +93,7 @@ def test_structured_file_uppercase_only(tmp_path, monkeypatch):
 
     monkeypatch.setenv("TAS_CONFIG_FILE", str(cfg))
     monkeypatch.setenv("TAS_API_KEY", LONG_API_KEY)
+    monkeypatch.setenv("TAS_MANAGEMENT_API_KEY", LONG_MGMT_KEY)
 
     app = new_app()
     load_configuration(app)
@@ -122,6 +126,7 @@ def test_structured_file_TAS_bucket_deep_merge(tmp_path, monkeypatch):
 
     monkeypatch.setenv("TAS_CONFIG_FILE", str(cfg))
     monkeypatch.setenv("TAS_API_KEY", LONG_API_KEY)
+    monkeypatch.setenv("TAS_MANAGEMENT_API_KEY", LONG_MGMT_KEY)
     # Add an env override that should merge/override nested value
     monkeypatch.setenv("TAS_OVERRIDE__limits__max_nonce_per_minute", "250")
 
@@ -141,6 +146,7 @@ def test_env_precedence_over_file(tmp_path, monkeypatch):
 
     monkeypatch.setenv("TAS_CONFIG_FILE", str(cfg))
     monkeypatch.setenv("TAS_API_KEY", LONG_API_KEY)
+    monkeypatch.setenv("TAS_MANAGEMENT_API_KEY", LONG_MGMT_KEY)
     monkeypatch.setenv("TAS_REDIS_HOST", "from_env")
 
     app = new_app()
@@ -153,7 +159,25 @@ def test_env_precedence_over_file(tmp_path, monkeypatch):
 def test_tas_override_nested_lowercasing(monkeypatch):
     # Loader lowercases TAS_OVERRIDE__ path parts
     monkeypatch.setenv("TAS_API_KEY", LONG_API_KEY)
+    monkeypatch.setenv("TAS_MANAGEMENT_API_KEY", LONG_MGMT_KEY)
     monkeypatch.setenv("TAS_OVERRIDE__Auth__JWKS__cache_seconds", "300")
     app = new_app()
     load_configuration(app)
     assert app.config["TAS"]["auth"]["jwks"]["cache_seconds"] == 300
+
+
+def test_requires_management_api_key(monkeypatch):
+    monkeypatch.setenv("TAS_API_KEY", LONG_API_KEY)
+    app = new_app()
+    with pytest.raises(
+        RuntimeError, match="TAS_MANAGEMENT_API_KEY environment variable is not set"
+    ):
+        load_configuration(app)
+
+
+def test_management_api_key_min_length(monkeypatch):
+    monkeypatch.setenv("TAS_API_KEY", LONG_API_KEY)
+    monkeypatch.setenv("TAS_MANAGEMENT_API_KEY", "short")
+    app = new_app()
+    with pytest.raises(RuntimeError, match="TAS_MANAGEMENT_API_KEY must be at least"):
+        load_configuration(app)

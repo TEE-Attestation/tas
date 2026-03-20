@@ -56,6 +56,7 @@ redis-server &
 
 # 4. Set environment variables
 export TAS_API_KEY="your-64-character-api-key-here-make-it-secure-and-long-enough"
+export TAS_MANAGEMENT_API_KEY="your-64-character-management-key-here-different-from-api-key"
 export TAS_KBM_PLUGIN="tas_kbm_mock"  # Use mock plugin for testing
 
 # 5. Create and sign TAS policy
@@ -138,7 +139,8 @@ cd ..
 
 #### Option A: Quick Setup (Mock KBM)
 ```bash
-export TAS_API_KEY="$(openssl rand -hex 32)"  # Generate secure API key
+export TAS_API_KEY="$(openssl rand -hex 32)"  # Generate secure client API key
+export TAS_MANAGEMENT_API_KEY="$(openssl rand -hex 32)"  # Generate secure management API key
 export TAS_KBM_PLUGIN="tas_kbm_mock"
 echo "secrets:\n  test-key-1: test-secret-value" > config/mock_secrets.yaml
 export TAS_KBM_CONFIG_FILE="config/mock_secrets.yaml"
@@ -146,7 +148,8 @@ export TAS_KBM_CONFIG_FILE="config/mock_secrets.yaml"
 
 #### Option B: Production Setup (KMIP JSON KBM)
 ```bash
-export TAS_API_KEY="$(openssl rand -hex 32)"  # Generate secure API key
+export TAS_API_KEY="$(openssl rand -hex 32)"  # Generate secure client API key
+export TAS_MANAGEMENT_API_KEY="$(openssl rand -hex 32)"  # Generate secure management API key
 export TAS_KBM_PLUGIN="tas_kbm_kmip_json"
 export TAS_KBM_CONFIG_FILE="./config/kmip/kmip.conf"
 
@@ -279,6 +282,7 @@ TAS uses a flexible configuration system supporting environment variables and YA
 ```bash
 # Minimum required configuration
 export TAS_API_KEY="your-secure-64-character-minimum-api-key-here"
+export TAS_MANAGEMENT_API_KEY="your-secure-64-character-minimum-management-key"
 export TAS_KBM_PLUGIN="tas_kbm_mock"  # or "tas_kbm_kmip"
 ```
 
@@ -287,6 +291,7 @@ export TAS_KBM_PLUGIN="tas_kbm_mock"  # or "tas_kbm_kmip"
 ```bash
 # Core settings
 export TAS_API_KEY="your-production-api-key-must-be-64-characters-minimum"
+export TAS_MANAGEMENT_API_KEY="your-management-api-key-must-be-64-characters-min"
 export TAS_KBM_PLUGIN="tas_kbm_kmip"
 export TAS_KBM_CONFIG_FILE="./config/pykmip/pykmip.conf"
 
@@ -320,21 +325,43 @@ curl -H "X-API-KEY: your-api-key" http://localhost:5000/version
 
 ### Core Endpoints
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/kb/v0/get_nonce` | GET | Generate attestation nonce |
-| `/kb/v0/get_secret` | POST | Retrieve secret after TEE verification |
-| `/policy/v0/store` | POST | Store security policy |
-| `/policy/v0/get/<key>` | GET | Retrieve security policy |
-| `/policy/v0/list` | GET | List all policies |
-| `/policy/v0/delete/<key>` | DELETE | Delete security policy |
-| `/version` | GET | Get TAS version |
+| Endpoint | Method | Auth Header | Description |
+|----------|--------|-------------|-------------|
+| `/kb/v0/get_nonce` | GET | `X-API-KEY` | Generate attestation nonce |
+| `/kb/v0/get_secret` | POST | `X-API-KEY` | Retrieve secret after TEE verification |
+| `/version` | GET | `X-API-KEY` | Get TAS version |
+
+### Management Endpoints
+
+| Endpoint | Method | Auth Header | Description |
+|----------|--------|-------------|-------------|
+| `/management/policy/v0/store` | POST | `X-MANAGEMENT-API-KEY` | Store security policy |
+| `/management/policy/v0/get/<key>` | GET | `X-MANAGEMENT-API-KEY` | Retrieve security policy |
+| `/management/policy/v0/list` | GET | `X-MANAGEMENT-API-KEY` | List all policies |
+| `/management/policy/v0/delete/<key>` | DELETE | `X-MANAGEMENT-API-KEY` | Delete security policy |
+
+### Deprecated Endpoints
+
+> **Deprecated**: The `/policy/v0/*` endpoints below are deprecated and will be removed after **31 March 2026**.
+> Use the `/management/policy/v0/*` endpoints above instead. Deprecated responses include `Deprecation`, `Sunset`, and `Warning` headers per [RFC 8594](https://www.rfc-editor.org/rfc/rfc8594).
+
+| Endpoint | Method | Auth Header | Description |
+|----------|--------|-------------|-------------|
+| `/policy/v0/store` | POST | `X-MANAGEMENT-API-KEY` | ~~Store security policy~~ (use `/management/policy/v0/store`) |
+| `/policy/v0/get/<key>` | GET | `X-MANAGEMENT-API-KEY` | ~~Retrieve security policy~~ (use `/management/policy/v0/get/<key>`) |
+| `/policy/v0/list` | GET | `X-MANAGEMENT-API-KEY` | ~~List all policies~~ (use `/management/policy/v0/list`) |
+| `/policy/v0/delete/<key>` | DELETE | `X-MANAGEMENT-API-KEY` | ~~Delete security policy~~ (use `/management/policy/v0/delete/<key>`) |
 
 ### Authentication
 
-All endpoints require API key authentication:
+TAS uses separate API keys for client and management operations:
+
 ```bash
+# Client endpoints (attestation, key retrieval)
 curl -H "X-API-KEY: your-api-key" <endpoint>
+
+# Management endpoints (policy CRUD)
+curl -H "X-MANAGEMENT-API-KEY: your-management-key" <endpoint>
 ```
 
 ### Example API Usage
@@ -364,7 +391,7 @@ curl -X POST \
 ```bash
 curl -X POST \
   -H "Content-Type: application/json" \
-  -H "X-API-KEY: your-api-key" \
+  -H "X-MANAGEMENT-API-KEY: your-management-key" \
   -d '{
     "policy_type": "SEV",
     "key_id": "my-key-1",
@@ -377,7 +404,7 @@ curl -X POST \
       }
     }
   }' \
-  http://localhost:5000/policy/v0/store
+  http://localhost:5000/management/policy/v0/store
 ```
 
 **Complete API Documentation**: See [docs/openapi.yaml](docs/openapi.yaml) and [docs/openapi.json](docs/openapi.json) files
@@ -524,6 +551,7 @@ python -m pytest tests/ --cov=tas --cov-report=html
  - Add RSA key to TEE report data
  - Policy registering tool
  - Policy identifier changes
+ - **Removal of deprecated `/policy/v0/*` endpoints** (31 March 2026) — migrate to `/management/policy/v0/*`
 
 ## Contributing 
 
@@ -545,9 +573,10 @@ redis-cli ping  # Test connectivity
 ```
 Error: TAS_API_KEY environment variable is not set
 ```
-**Solution**: Set a secure API key (minimum 64 characters)
+**Solution**: Set secure API keys (minimum 64 characters each)
 ```bash
 export TAS_API_KEY="$(openssl rand -hex 32)"
+export TAS_MANAGEMENT_API_KEY="$(openssl rand -hex 32)"
 ```
 
 ### KMIP Connection Issues
