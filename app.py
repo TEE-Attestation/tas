@@ -296,15 +296,17 @@ def get_secret():
     logger.debug(f"Received TEE evidence: {tee_evidence}")
     logger.debug(f"Received Key ID: {key_id}")
 
-    # Call vm_verify to validate the parameters
-    logger.info(f"Starting TEE verification for type: {tee_type}")
-    is_verified, verify_error = vm_verify(
-        redis_client, nonce, tee_type, tee_evidence, key_id
-    )
-    if not is_verified:
-        logger.error(f"TEE verification failed: {verify_error}")
-        return jsonify({"error": "TEE verification failed"}), 400
-    logger.info("TEE verification successful")
+    # Report data binding is required for this route,
+    # create a new route for non-binding use cases if needed in the future
+    report_data_binding = data.get("report-data-binding")
+    if report_data_binding is None:
+        logger.error("Secret request missing report data binding")
+        return jsonify({"error": "Report data binding is required"}), 400
+
+    logger.debug(f"Received report data binding: {report_data_binding}")
+
+    # Optional GPU evidence for Phase 2 - if provided, it will be passed to the vm_verify function
+    gpu_evidence = data.get("gpu-evidence", None)  # Phase 2
 
     # Get client's wrapping key (RSA public key) from the request
     # The public key is expected to be in base64 format
@@ -328,6 +330,22 @@ def get_secret():
     if not isinstance(wrapping_key, bytes):
         logger.error("Invalid wrapping key format: not bytes")
         return jsonify({"error": "Invalid wrapping key format"}), 400
+
+    # Call vm_verify to validate the parameters
+    logger.info(f"Starting TEE verification for type: {tee_type}")
+    is_verified, verify_error = vm_verify(
+        redis_client,
+        nonce,
+        tee_type,
+        tee_evidence,
+        key_id,
+        wrapping_key=wrapping_key,
+        report_data_binding=report_data_binding,
+        gpu_evidence=gpu_evidence,  # NEW (for Phase 2)
+    )
+    if not is_verified:
+        logger.error(f"TEE verification failed: {verify_error}")
+        return jsonify({"error": "TEE verification failed"}), 400
 
     # Retrieve the secret from the KMIP Broker Module
     logger.info(f"Retrieving secret for key ID: {key_id}")
