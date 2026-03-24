@@ -193,3 +193,6 @@ tas.log
 
 # Nekos/act config files
 .actrc
+
+#VS Code settings
+.vscode/
