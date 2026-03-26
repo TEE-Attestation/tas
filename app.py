@@ -23,6 +23,7 @@ from flask import Flask, jsonify, request
 from tas.auth import authenticate_request, init_client_auth, init_management_auth
 from tas.config_loader import load_configuration
 from tas.deprecated_routes import deprecated_policy_bp
+from tas.error_handlers import register_error_handlers
 from tas.management_routes import management_bp
 from tas.tas_logging import configure_external_logging, setup_logging
 from tas.tas_vm import vm_verify
@@ -99,12 +100,7 @@ def log_response_info(response):
     return response
 
 
-@app.errorhandler(Exception)
-def handle_exception(e):
-    logger.error(
-        f"Unhandled exception in {request.method} {request.path}: {e}", exc_info=True
-    )
-    return jsonify({"error": "Internal server error"}), 500
+register_error_handlers(app)
 
 
 # Optionally add an extra plugin directory to sys.path
