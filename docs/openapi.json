@@ -255,6 +255,37 @@
         "required": [
           "version"
         ]
+      },
+      "StatusResponse": {
+        "type": "object",
+        "description": "Redis persistence status. redis_persistence_active is a live check of whether AOF is enabled in Redis (true/false, or \"unknown\" if the query fails). config_rewrite_succeeded indicates whether CONFIG REWRITE succeeded at startup (true/false, or null if persistence was not attempted).",
+        "properties": {
+          "redis_persistence_active": {
+            "description": "Whether Redis AOF + RDB persistence is currently active. \"unknown\" if Redis could not be queried.",
+            "oneOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "string",
+                "enum": [
+                  "unknown"
+                ]
+              }
+            ],
+            "example": true
+          },
+          "config_rewrite_succeeded": {
+            "description": "Whether CONFIG REWRITE succeeded at startup. true = settings persisted to redis.conf, false = REWRITE failed (settings active but not persisted), null = persistence not attempted (TAS_REDIS_PERSISTENCE=false).",
+            "type": "boolean",
+            "nullable": true,
+            "example": true
+          }
+        },
+        "required": [
+          "redis_persistence_active",
+          "config_rewrite_succeeded"
+        ]
       }
     },
     "headers": {
@@ -1076,6 +1107,42 @@
           },
           "404": {
             "description": "Policy not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/management/status": {
+      "get": {
+        "tags": [
+          "Management"
+        ],
+        "summary": "Get Redis persistence status",
+        "description": "Returns the current Redis persistence state and whether CONFIG REWRITE succeeded at TAS startup. Requires management API key.",
+        "security": [
+          {
+            "ManagementApiKeyAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Persistence status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatusResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized \u2014 invalid or missing management API key",
             "content": {
               "application/json": {
                 "schema": {

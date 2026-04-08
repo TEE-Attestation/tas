@@ -124,6 +124,8 @@ Stored in Flask's config; set directly via env without prefix:
 | TAS_NONCE_EXPIRATION_SECONDS | int | `120` | No | Number of seconds a nonce remains valid after creation. Nonces older than this are rejected during attestation verification. |
 | TAS_REDIS_HOST | str | `"localhost"` | No | Hostname or IP address of the Redis server used for nonce storage, certificate caching, and policy storage. |
 | TAS_REDIS_PORT | int | `6379` | No | Port number of the Redis server. |
+| TAS_REDIS_PASSWORD | str | `""` | No | Redis AUTH password. When set, TAS authenticates to Redis on connection. Always set via environment variable, never in config files. |
+| TAS_REDIS_PERSISTENCE | bool | `true` | No | When `true`, TAS configures Redis AOF + RDB persistence at startup via `CONFIG SET`. Set to `false` if your Redis is externally managed or you want to use your own `redis.conf` settings. Check `GET /management/status` for runtime persistence state. See [REDIS_PERSISTENCE.md](REDIS_PERSISTENCE.md) for details. |
 | TAS_PLUGIN_PREFIX | str | `"tas_kbm"` | No | Module name prefix used to discover KBM (Key Broker Module) plugins at startup. Only modules whose name starts with this prefix are loaded. |
 | TAS_KBM_PLUGIN | str | `"tas_kbm_mock"` | No | Exact module name of the KBM plugin to activate. Must match one of the discovered plugins. Controls which key broker backend TAS uses (e.g., mock, KMIP, KMIP-JSON). |
 | TAS_KBM_CONFIG_FILE | str | `"./config/kbm_mock_config.yaml"` | No | Path to the configuration file passed to the selected KBM plugin during initialisation. The format depends on the plugin (e.g., PyKMIP conf, KMIP-JSON YAML). |
@@ -175,6 +177,8 @@ export TAS_OVERRIDE__logging__file="/var/log/tas.log"
 export TAS_CONFIG_CLASS=config.ProductionConfig
 export TAS_REDIS_HOST=redis.internal
 export TAS_REDIS_PORT=6380
+export TAS_REDIS_PASSWORD='your-secure-redis-password'
+export TAS_REDIS_PERSISTENCE=true
 export TAS_NONCE_EXPIRATION_SECONDS=180
 export TAS_KBM_CONFIG_FILE=./config/pykmip/alt.conf
 export TAS_KBM_PLUGIN=tas_kbm_kmip_json
@@ -184,6 +188,29 @@ export TAS_POLICY_TRUST=./certs/policy
 export TAS_API_KEY='...(>=64 chars)...'
 export TAS_MANAGEMENT_API_KEY='...(>=64 chars)...'
 ```
+
+## Management status endpoint
+
+`GET /management/status` returns the runtime Redis persistence state. Requires
+the `X-MANAGEMENT-API-KEY` header.
+
+```json
+{
+  "redis_persistence_active": true,
+  "config_rewrite_succeeded": true
+}
+```
+
+| Field | Type | Values | Meaning |
+|-------|------|--------|---------|
+| `redis_persistence_active` | bool \| string | `true` | AOF + RDB persistence is currently enabled in Redis |
+| | | `false` | Persistence is not enabled |
+| | | `"unknown"` | Could not query Redis (connection issue) |
+| `config_rewrite_succeeded` | bool \| null | `true` | CONFIG REWRITE succeeded — settings survive Redis restart |
+| | | `false` | CONFIG REWRITE failed — settings active but not persisted to redis.conf |
+| | | `null` | Persistence not attempted (`TAS_REDIS_PERSISTENCE=false`) |
+
+See [REDIS_PERSISTENCE.md](REDIS_PERSISTENCE.md) for operator guidance.
 
 ## Run TAS with ProductionConfig or DevelopmentConfig
 

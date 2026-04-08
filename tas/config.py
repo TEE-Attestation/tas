@@ -42,6 +42,8 @@ class BaseConfig:
     TAS_NONCE_EXPIRATION_SECONDS = int(os.getenv("TAS_NONCE_EXPIRATION_SECONDS", "120"))
     TAS_REDIS_HOST = os.getenv("TAS_REDIS_HOST", "localhost")
     TAS_REDIS_PORT = int(os.getenv("TAS_REDIS_PORT", "6379"))
+    TAS_REDIS_PASSWORD = os.getenv("TAS_REDIS_PASSWORD", "")
+    TAS_REDIS_PERSISTENCE = True
     TAS_PLUGIN_PREFIX = os.getenv("TAS_PLUGIN_PREFIX", "tas_kbm")
     # TODO fix this  to take the config file relative to app.py file
     TAS_KBM_CONFIG_FILE = os.getenv(

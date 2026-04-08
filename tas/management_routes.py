@@ -262,3 +262,27 @@ def delete_policy(policy_key):
     except Exception as e:
         logger.error(f"Error deleting policy: {e}")
         return jsonify({"error": "Failed to delete policy from Redis"}), 500
+
+
+@management_bp.route("/status", methods=["GET"])
+def status():
+    """Return operational status of the TAS management plane."""
+    auth_response = authenticate_management_request()
+    if auth_response:
+        return auth_response
+
+    redis_client = _get_redis()
+    try:
+        aof_config = redis_client.config_get("appendonly")
+        persistence_active = aof_config.get("appendonly") == "yes"
+    except Exception:
+        persistence_active = "unknown"
+
+    config_rewrite_ok = current_app.extensions.get("redis_config_rewrite_ok")
+
+    return jsonify(
+        {
+            "redis_persistence_active": persistence_active,
+            "config_rewrite_succeeded": config_rewrite_ok,
+        }
+    )
