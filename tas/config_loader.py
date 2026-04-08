@@ -34,9 +34,12 @@ KNOWN_TAS_KEYS = {
     "TAS_NONCE_EXPIRATION_SECONDS",
     "TAS_REDIS_HOST",
     "TAS_REDIS_PORT",
+    "TAS_REDIS_PASSWORD",
+    "TAS_REDIS_PERSISTENCE",
     "TAS_PLUGIN_PREFIX",
     "TAS_KBM_CONFIG_FILE",
     "TAS_KBM_PLUGIN",
+    "TAS_ENFORCE_SIGNED_POLICIES",
     "TAS_EXTRA_PLUGIN_DIR",
 }
 
@@ -200,11 +203,15 @@ def _load_trusted_keys(path: str):
 
 def apply_tas_env_overrides(app):
     # Direct overrides (exact match)
+    _SENSITIVE_KEYS = {"TAS_REDIS_PASSWORD", "TAS_API_KEY", "TAS_MANAGEMENT_API_KEY"}
     direct_overrides = []
     for key in KNOWN_TAS_KEYS:
         if key in os.environ:
             app.config[key] = _coerce(os.environ[key])
-            direct_overrides.append(f"{key}={app.config[key]}")
+            if key in _SENSITIVE_KEYS:
+                direct_overrides.append(f"{key}=***")
+            else:
+                direct_overrides.append(f"{key}={app.config[key]}")
 
     if direct_overrides:
         logger.debug(

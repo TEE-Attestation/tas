@@ -136,21 +136,63 @@ discovered_plugins = {
 
 # Initialize Redis client
 try:
-    redis_client = redis.StrictRedis(
-        host=app.config["TAS_REDIS_HOST"],  # Redis server address
-        port=app.config["TAS_REDIS_PORT"],  # Redis server port
-        decode_responses=True,  # Ensures responses are returned as strings
-    )
+    redis_kwargs = {
+        "host": app.config["TAS_REDIS_HOST"],
+        "port": app.config["TAS_REDIS_PORT"],
+        "decode_responses": True,
+    }
+    redis_password = app.config.get("TAS_REDIS_PASSWORD", "")
+    if redis_password:
+        redis_kwargs["password"] = redis_password
+
+    redis_client = redis.StrictRedis(**redis_kwargs)
     # Test the connection to ensure Redis is reachable
     redis_client.ping()
     logger.info("Successful Connection to Redis Server")
+    if redis_password:
+        logger.info("Redis AUTH enabled")
+    else:
+        logger.info("Redis AUTH not configured (no TAS_REDIS_PASSWORD set)")
 except redis.ConnectionError as e:
     raise RuntimeError(f"Failed to connect to the Redis server: {e}")
 except Exception as e:
     raise RuntimeError(f"An unexpected error occurred while initializing Redis: {e}")
 
-# Expose Redis client to blueprints
+# Configure Redis persistence (AOF + RDB) if enabled
+_redis_config_rewrite_ok = None  # None = persistence not attempted
+if app.config.get("TAS_REDIS_PERSISTENCE", True):
+    try:
+        redis_client.config_set("appendonly", "yes")
+        redis_client.config_set("appendfsync", "everysec")
+        redis_client.config_set("save", "3600 1 300 100 60 10000")
+        logger.info("Redis persistence configured (AOF + RDB)")
+        try:
+            redis_client.config_rewrite()
+            _redis_config_rewrite_ok = True
+            logger.info(
+                "Redis CONFIG REWRITE successful — settings persisted to Redis config file"
+            )
+        except redis.ResponseError as e:
+            _redis_config_rewrite_ok = False
+            logger.warning(
+                "Redis CONFIG REWRITE failed — if Redis restarts independently, "
+                "persistence settings will be lost and policies WILL BE DESTROYED. "
+                "Either grant CONFIG REWRITE permission or configure persistence "
+                f"in your redis.conf manually: {e}"
+            )
+    except redis.ResponseError as e:
+        _redis_config_rewrite_ok = False
+        logger.warning(
+            f"Could not configure Redis persistence (CONFIG SET rejected): {e}. "
+            "Policies WILL BE LOST if Redis restarts without persistence. "
+            "Ensure your Redis server has persistence enabled independently."
+        )
+else:
+    logger.info("Redis persistence disabled by TAS_REDIS_PERSISTENCE=false")
+
+# Expose Redis client and persistence state to blueprints
 app.extensions["redis"] = redis_client
+app.extensions["redis_config_rewrite_ok"] = _redis_config_rewrite_ok
 
 # Register blueprints
 app.register_blueprint(management_bp)

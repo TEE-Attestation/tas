@@ -63,6 +63,10 @@ class FakeRedis:
     def setex(self, key, ttl, value):
         self._store[key] = value
 
+    def config_get(self, key):
+        defaults = {"appendonly": "no"}
+        return {key: defaults.get(key, "")}
+
 
 @pytest.fixture()
 def app():
@@ -75,6 +79,7 @@ def app():
 
     fake_redis = FakeRedis()
     test_app.extensions["redis"] = fake_redis
+    test_app.extensions["redis_config_rewrite_ok"] = None
 
     init_client_auth(test_app)
     init_management_auth(test_app)
@@ -311,3 +316,46 @@ class TestKeySeparation:
     def test_management_route_accepts_mgmt_key(self, client, mgmt_headers):
         resp = client.get("/management/policy/v0/list", headers=mgmt_headers)
         assert resp.status_code == 200
+
+
+class TestStatusEndpoint:
+    """Tests for GET /management/status."""
+
+    def test_status_returns_persistence_info(self, client):
+        resp = client.get(
+            "/management/status",
+            headers={"X-MANAGEMENT-API-KEY": MGMT_API_KEY},
+        )
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert "redis_persistence_active" in data
+        assert "config_rewrite_succeeded" in data
+
+    def test_status_reflects_config_rewrite_ok(self, app, client):
+        app.extensions["redis_config_rewrite_ok"] = True
+        resp = client.get(
+            "/management/status",
+            headers={"X-MANAGEMENT-API-KEY": MGMT_API_KEY},
+        )
+        data = resp.get_json()
+        assert data["config_rewrite_succeeded"] is True
+
+    def test_status_reflects_config_rewrite_failed(self, app, client):
+        app.extensions["redis_config_rewrite_ok"] = False
+        resp = client.get(
+            "/management/status",
+            headers={"X-MANAGEMENT-API-KEY": MGMT_API_KEY},
+        )
+        data = resp.get_json()
+        assert data["config_rewrite_succeeded"] is False
+
+    def test_status_requires_management_key(self, client):
+        resp = client.get("/management/status")
+        assert resp.status_code == 401
+
+    def test_status_rejects_wrong_key(self, client):
+        resp = client.get(
+            "/management/status",
+            headers={"X-MANAGEMENT-API-KEY": "wrong-key"},
+        )
+        assert resp.status_code == 401

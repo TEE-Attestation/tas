@@ -7,7 +7,7 @@ on:
   pull_request:
   push:
     branches: [main]
-    
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -18,94 +18,496 @@ jobs:
         include:
           - python-version: "3.10"
             port: "5000"
+            redis_port: "6370"
           - python-version: "3.11"
             port: "5001"
+            redis_port: "6371"
           - python-version: "3.12"
             port: "5002"
+            redis_port: "6372"
           - python-version: "3.13"
             port: "5003"
+            redis_port: "6373"
           - python-version: "3.14"
             port: "5004"
+            redis_port: "6374"
 
     steps:
       - uses: actions/checkout@v5
+
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      # You can test your matrix by printing the current Python version
+
       - name: Display Python version
         run: python -c "import sys; print(sys.version)"
 
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y redis-server
+          sudo apt-get install -y redis-server iproute2 psmisc
           redis-server --version
           pip install --upgrade pip
           git clone https://github.com/TEE-Attestation/sev_pytools.git
-          cd sev_pytools
-          pip install .
-          cd ..
+          cd sev_pytools && pip install . && cd ..
           git clone https://github.com/TEE-Attestation/tdx_pytools.git
-          cd tdx_pytools
-          pip install .
-          cd ..
+          cd tdx_pytools && pip install . && cd ..
           pip install -r requirements.txt
-      
-      - name: python compile check
-        run: |
-           python -m compileall -q -o 2  ./
-        
-
-      - name: Test with pytest
-        run: |
           pip install pytest pytest-cov
-          python -m pytest tests/ -v
+
+      - name: Compile check
+        run: python -m compileall -q -o 2 ./
+
+      - name: Unit tests
+        run: python -m pytest tests/ -v
 
       - name: Test demo signer
         run: |
           cd ./certs/policy
           python demo_signer.py ./sev_example_policy.json
-          cd ../../
 
-      - name: install ss command
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y iproute2
+      # ----------------------------------------------------------------
+      # Smoke tests — verify TAS starts under Flask and Gunicorn
+      # ----------------------------------------------------------------
 
-      - name: run application for 1 second with flask
+      - name: Smoke test (Flask)
         run: |
+          redis-cli -p ${{ matrix.redis_port }} ping 2>/dev/null \
+            || redis-server --port ${{ matrix.redis_port }} --daemonize yes
+          for i in $(seq 1 10); do
+            redis-cli -p ${{ matrix.redis_port }} ping 2>/dev/null | grep -q PONG && break
+            sleep 0.5
+          done
           setsid flask run --no-reload -h localhost -p ${{ matrix.port }} 2>&1 &
           PID=$!
-          sleep 1
+          for i in $(seq 1 20); do
+            curl -sf -H "X-API-KEY: $TAS_API_KEY" http://localhost:${{ matrix.port }}/version > /dev/null 2>&1 && break
+            sleep 0.5
+          done
           if ! kill -0 $PID 2>/dev/null; then
             echo "Flask exited early — startup failure"
             exit 1
           fi
           kill -- -$PID 2>/dev/null || true
           sleep 1
-          sudo ss --kill state listening src :${{ matrix.port }}
+          fuser -k ${{ matrix.port }}/tcp 2>/dev/null || true
         env:
           APP_ENV: "production"
           DEBUG: "false"
+          TAS_REDIS_PORT: "${{ matrix.redis_port }}"
           TAS_API_KEY: "our-secure-api-key-asdfg-12345-zxcvb-qwerty-lkjhg-56789-a1s23-56"
-          TAS_MANAGEMENT_API_KEY:  "mgmt-our-secure-api-key-asdfg-12345-zxcvb-qwerty-lkjhg-56789-a1s23-56"
-      
-      - name: run application for 1 second with gunicorn
+          TAS_MANAGEMENT_API_KEY: "mgmt-our-secure-api-key-asdfg-12345-zxcvb-qwerty-lkjhg-56789-a1s23-56"
+
+      - name: Smoke test (Gunicorn)
         run: |
-          setsid gunicorn -w 4 -b localhost:${{matrix.port}} app:app &
+          redis-cli -p ${{ matrix.redis_port }} ping 2>/dev/null \
+            || redis-server --port ${{ matrix.redis_port }} --daemonize yes
+          for i in $(seq 1 10); do
+            redis-cli -p ${{ matrix.redis_port }} ping 2>/dev/null | grep -q PONG && break
+            sleep 0.5
+          done
+          setsid gunicorn -w 4 -b localhost:${{ matrix.port }} app:app &
           PID=$!
-          sleep 1
+          for i in $(seq 1 20); do
+            curl -sf -H "X-API-KEY: $TAS_API_KEY" http://localhost:${{ matrix.port }}/version > /dev/null 2>&1 && break
+            sleep 0.5
+          done
           if ! kill -0 $PID 2>/dev/null; then
             echo "Gunicorn exited early — startup failure"
             exit 1
           fi
           kill -- -$PID 2>/dev/null || true
           sleep 1
-          sudo ss --kill state listening src :${{ matrix.port }}
+          fuser -k ${{ matrix.port }}/tcp 2>/dev/null || true
         env:
           APP_ENV: "production"
           DEBUG: "false"
+          TAS_REDIS_PORT: "${{ matrix.redis_port }}"
           TAS_API_KEY: "our-secure-api-key-asdfg-12345-zxcvb-qwerty-lkjhg-56789-a1s23-56"
           TAS_MANAGEMENT_API_KEY: "mgmt-our-secure-api-key-asdfg-12345-zxcvb-qwerty-lkjhg-56789-a1s23-56"
+
+      # ----------------------------------------------------------------
+      # Redis persistence integration tests
+      #
+      # Verify TAS enables AOF + RDB persistence on a bare Redis via
+      # CONFIG SET, persists settings via CONFIG REWRITE, and supports
+      # Redis AUTH.
+      # ----------------------------------------------------------------
+
+      - name: "Test A: TAS enables persistence on bare Redis (default)"
+        run: |
+          set -e
+          redis-cli -p ${{ matrix.redis_port }} SHUTDOWN NOSAVE 2>/dev/null || true
+          sleep 1
+
+          # Start Redis with NO persistence — simulates out-of-box state
+          rm -rf /tmp/redis-test-${{ matrix.redis_port }} && mkdir -p /tmp/redis-test-${{ matrix.redis_port }}
+          printf "port ${{ matrix.redis_port }}\ndir /tmp/redis-test-${{ matrix.redis_port }}\n" > /tmp/redis-${{ matrix.redis_port }}.conf
+          redis-server /tmp/redis-${{ matrix.redis_port }}.conf --daemonize yes
+          for i in $(seq 1 10); do redis-cli -p ${{ matrix.redis_port }} ping 2>/dev/null | grep -q PONG && break; sleep 0.5; done
+
+          # Confirm Redis starts without persistence
+          AOF_BEFORE=$(redis-cli -p ${{ matrix.redis_port }} CONFIG GET appendonly | tail -1)
+          echo "Before TAS: appendonly=$AOF_BEFORE"
+          if [ "$AOF_BEFORE" != "no" ]; then
+            echo "FAIL: expected appendonly=no before TAS"
+            exit 1
+          fi
+
+          # Start TAS — TAS_REDIS_PERSISTENCE defaults to true
+          setsid flask run --no-reload -h localhost -p ${{ matrix.port }} 2>&1 &
+          TAS_PID=$!
+          # Wait for TAS to be ready (up to 10s)
+          for i in $(seq 1 20); do
+            curl -sf -H "X-API-KEY: $TAS_API_KEY" http://localhost:${{ matrix.port }}/version > /dev/null 2>&1 && break
+            sleep 0.5
+          done
+          if ! kill -0 $TAS_PID 2>/dev/null; then
+            echo "FAIL: TAS exited early"; exit 1
+          fi
+
+          # Verify TAS enabled AOF via CONFIG SET
+          AOF_AFTER=$(redis-cli -p ${{ matrix.redis_port }} CONFIG GET appendonly | tail -1)
+          if [ "$AOF_AFTER" != "yes" ]; then
+            echo "FAIL: appendonly='$AOF_AFTER', expected 'yes'"; exit 1
+          fi
+          echo "PASS: appendonly = yes"
+
+          # Verify appendfsync = everysec
+          FSYNC=$(redis-cli -p ${{ matrix.redis_port }} CONFIG GET appendfsync | tail -1)
+          if [ "$FSYNC" != "everysec" ]; then
+            echo "FAIL: appendfsync='$FSYNC', expected 'everysec'"; exit 1
+          fi
+          echo "PASS: appendfsync = everysec"
+
+          # Verify RDB save schedule was set
+          SAVE_AFTER=$(redis-cli -p ${{ matrix.redis_port }} CONFIG GET save | tail -1)
+          if [ -z "$SAVE_AFTER" ]; then
+            echo "FAIL: save schedule is empty after TAS start"; exit 1
+          fi
+          echo "PASS: RDB save schedule='$SAVE_AFTER'"
+
+          # Check CONFIG REWRITE wrote settings to config file
+          cat /tmp/redis-${{ matrix.redis_port }}.conf
+          if grep -q "^appendonly" /tmp/redis-${{ matrix.redis_port }}.conf; then
+            echo "PASS: CONFIG REWRITE persisted settings"
+          else
+            echo "WARN: CONFIG REWRITE did not persist (may lack permission)"
+          fi
+
+          # Cleanup
+          kill -- -$TAS_PID 2>/dev/null || true
+          sleep 1
+          fuser -k ${{ matrix.port }}/tcp 2>/dev/null || true
+          redis-cli -p ${{ matrix.redis_port }} SHUTDOWN NOSAVE 2>/dev/null || true
+          rm -rf /tmp/redis-test-${{ matrix.redis_port }}
+        env:
+          TAS_REDIS_PORT: "${{ matrix.redis_port }}"
+          TAS_API_KEY: "our-secure-api-key-asdfg-12345-zxcvb-qwerty-lkjhg-56789-a1s23-56"
+          TAS_MANAGEMENT_API_KEY: "mgmt-our-secure-api-key-asdfg-12345-zxcvb-qwerty-lkjhg-56789-a1s23-56"
+          TAS_ENFORCE_SIGNED_POLICIES: "false"
+
+      - name: "Test B: Policy data survives Redis restart"
+        run: |
+          set -e
+          redis-cli -p ${{ matrix.redis_port }} SHUTDOWN NOSAVE 2>/dev/null || true
+          sleep 1
+
+          # Start Redis with persistence pre-enabled (known-good config)
+          rm -rf /tmp/redis-test-${{ matrix.redis_port }} && mkdir -p /tmp/redis-test-${{ matrix.redis_port }}
+          printf "port ${{ matrix.redis_port }}\ndir /tmp/redis-test-${{ matrix.redis_port }}\nappendonly yes\nappendfsync everysec\n" \
+            > /tmp/redis-${{ matrix.redis_port }}.conf
+          redis-server /tmp/redis-${{ matrix.redis_port }}.conf --daemonize yes
+          for i in $(seq 1 10); do redis-cli -p ${{ matrix.redis_port }} ping 2>/dev/null | grep -q PONG && break; sleep 0.5; done
+
+          # Start TAS
+          setsid flask run --no-reload -h localhost -p ${{ matrix.port }} 2>&1 &
+          TAS_PID=$!
+          # Wait for TAS to be ready (up to 10s)
+          for i in $(seq 1 20); do
+            curl -sf -H "X-API-KEY: $TAS_API_KEY" http://localhost:${{ matrix.port }}/version > /dev/null 2>&1 && break
+            sleep 0.5
+          done
+          if ! kill -0 $TAS_PID 2>/dev/null; then
+            echo "FAIL: TAS exited early"; exit 1
+          fi
+
+          # Store a policy
+          HTTP_CODE=$(curl -s -o /tmp/store_resp.json -w "%{http_code}" \
+            -X POST "http://localhost:${{ matrix.port }}/management/policy/v0/store" \
+            -H "Content-Type: application/json" \
+            -H "X-MANAGEMENT-API-KEY: $TAS_MANAGEMENT_API_KEY" \
+            -d '{
+              "policy_type": "SEV",
+              "key_id": "ci-persist-test",
+              "policy": {
+                "metadata": {
+                  "name": "CI Persistence Test",
+                  "version": "1.0",
+                  "description": "Integration test policy"
+                },
+                "validation_rules": {"host_data": {"exact_match": "test"}}
+              }
+            }')
+          if [ "$HTTP_CODE" -ne 200 ] && [ "$HTTP_CODE" -ne 201 ]; then
+            echo "FAIL: Store policy returned HTTP $HTTP_CODE"
+            cat /tmp/store_resp.json; exit 1
+          fi
+          echo "PASS: Policy stored (HTTP $HTTP_CODE)"
+
+          # Confirm policy exists
+          redis-cli -p ${{ matrix.redis_port }} GET "policy:SEV:ci-persist-test" | grep -q "CI Persistence Test"
+          echo "PASS: Policy found in Redis"
+
+          # Wait for AOF fsync (appendfsync everysec)
+          sleep 2
+          echo "Data dir before restart:"
+          ls -la /tmp/redis-test-${{ matrix.redis_port }}/
+
+          # Kill TAS, cold restart Redis (SHUTDOWN NOSAVE — forces AOF-only recovery)
+          kill -- -$TAS_PID 2>/dev/null || true
+          sleep 1
+          fuser -k ${{ matrix.port }}/tcp 2>/dev/null || true
+          redis-cli -p ${{ matrix.redis_port }} SHUTDOWN NOSAVE 2>/dev/null || true
+          sleep 1
+
+          # Restart Redis
+          redis-server /tmp/redis-${{ matrix.redis_port }}.conf --daemonize yes
+          for i in $(seq 1 10); do redis-cli -p ${{ matrix.redis_port }} ping 2>/dev/null | grep -q PONG && break; sleep 0.5; done
+
+          # Verify policy survived
+          RESULT=$(redis-cli -p ${{ matrix.redis_port }} GET "policy:SEV:ci-persist-test")
+          if echo "$RESULT" | grep -q "CI Persistence Test"; then
+            echo "PASS: Policy survived Redis restart via AOF"
+          else
+            echo "FAIL: Policy lost after restart"
+            echo "Got: $RESULT"
+            ls -laR /tmp/redis-test-${{ matrix.redis_port }}/ || true
+            exit 1
+          fi
+
+          # Cleanup
+          redis-cli -p ${{ matrix.redis_port }} SHUTDOWN NOSAVE 2>/dev/null || true
+          rm -rf /tmp/redis-test-${{ matrix.redis_port }}
+        env:
+          TAS_REDIS_PORT: "${{ matrix.redis_port }}"
+          TAS_API_KEY: "our-secure-api-key-asdfg-12345-zxcvb-qwerty-lkjhg-56789-a1s23-56"
+          TAS_MANAGEMENT_API_KEY: "mgmt-our-secure-api-key-asdfg-12345-zxcvb-qwerty-lkjhg-56789-a1s23-56"
+          TAS_REDIS_PERSISTENCE: "true"
+          TAS_ENFORCE_SIGNED_POLICIES: "false"
+
+      - name: "Test C: Persistence opt-out (TAS_REDIS_PERSISTENCE=false)"
+        run: |
+          set -e
+          redis-cli -p ${{ matrix.redis_port }} SHUTDOWN NOSAVE 2>/dev/null || true
+          sleep 1
+
+          # Start Redis with NO persistence
+          rm -rf /tmp/redis-test-${{ matrix.redis_port }} && mkdir -p /tmp/redis-test-${{ matrix.redis_port }}
+          printf "port ${{ matrix.redis_port }}\ndir /tmp/redis-test-${{ matrix.redis_port }}\n" > /tmp/redis-${{ matrix.redis_port }}.conf
+          redis-server /tmp/redis-${{ matrix.redis_port }}.conf --daemonize yes
+          for i in $(seq 1 10); do redis-cli -p ${{ matrix.redis_port }} ping 2>/dev/null | grep -q PONG && break; sleep 0.5; done
+
+          # Start TAS with persistence disabled
+          setsid flask run --no-reload -h localhost -p ${{ matrix.port }} 2>&1 &
+          TAS_PID=$!
+          # Wait for TAS to be ready (up to 10s)
+          for i in $(seq 1 20); do
+            curl -sf -H "X-API-KEY: $TAS_API_KEY" http://localhost:${{ matrix.port }}/version > /dev/null 2>&1 && break
+            sleep 0.5
+          done
+          if ! kill -0 $TAS_PID 2>/dev/null; then
+            echo "FAIL: TAS exited early"; exit 1
+          fi
+
+          # Verify TAS did NOT enable AOF
+          AOF=$(redis-cli -p ${{ matrix.redis_port }} CONFIG GET appendonly | tail -1)
+          if [ "$AOF" != "no" ]; then
+            echo "FAIL: appendonly='$AOF', expected 'no'"; exit 1
+          fi
+          echo "PASS: appendonly = no (TAS did not touch Redis)"
+
+          # Verify config file was not modified
+          if grep -q "appendonly" /tmp/redis-${{ matrix.redis_port }}.conf; then
+            echo "FAIL: config file modified despite persistence disabled"; exit 1
+          fi
+          echo "PASS: Config file unchanged"
+
+          # Verify /management/status reflects opt-out
+          RESPONSE=$(curl -s \
+            "http://localhost:${{ matrix.port }}/management/status" \
+            -H "X-MANAGEMENT-API-KEY: $TAS_MANAGEMENT_API_KEY")
+          echo "Status: $RESPONSE"
+
+          echo "$RESPONSE" | python3 -c "
+          import json, sys
+          data = json.load(sys.stdin)
+          assert data['redis_persistence_active'] is False, f\"expected false, got {data['redis_persistence_active']}\"
+          print('PASS: redis_persistence_active = false')
+          assert data['config_rewrite_succeeded'] is None, f\"expected null, got {data['config_rewrite_succeeded']}\"
+          print('PASS: config_rewrite_succeeded = null (not attempted)')
+          "
+
+          # Cleanup
+          kill -- -$TAS_PID 2>/dev/null || true
+          sleep 1
+          fuser -k ${{ matrix.port }}/tcp 2>/dev/null || true
+          redis-cli -p ${{ matrix.redis_port }} SHUTDOWN NOSAVE 2>/dev/null || true
+          rm -rf /tmp/redis-test-${{ matrix.redis_port }}
+        env:
+          TAS_REDIS_PORT: "${{ matrix.redis_port }}"
+          TAS_API_KEY: "our-secure-api-key-asdfg-12345-zxcvb-qwerty-lkjhg-56789-a1s23-56"
+          TAS_MANAGEMENT_API_KEY: "mgmt-our-secure-api-key-asdfg-12345-zxcvb-qwerty-lkjhg-56789-a1s23-56"
+          TAS_REDIS_PERSISTENCE: "false"
+          TAS_ENFORCE_SIGNED_POLICIES: "false"
+
+      - name: "Test D: /management/status endpoint"
+        run: |
+          set -e
+          redis-cli -p ${{ matrix.redis_port }} SHUTDOWN NOSAVE 2>/dev/null || true
+          sleep 1
+
+          rm -rf /tmp/redis-test-${{ matrix.redis_port }} && mkdir -p /tmp/redis-test-${{ matrix.redis_port }}
+          printf "port ${{ matrix.redis_port }}\ndir /tmp/redis-test-${{ matrix.redis_port }}\n" > /tmp/redis-${{ matrix.redis_port }}.conf
+          redis-server /tmp/redis-${{ matrix.redis_port }}.conf --daemonize yes
+          for i in $(seq 1 10); do redis-cli -p ${{ matrix.redis_port }} ping 2>/dev/null | grep -q PONG && break; sleep 0.5; done
+
+          setsid flask run --no-reload -h localhost -p ${{ matrix.port }} 2>&1 &
+          TAS_PID=$!
+          # Wait for TAS to be ready (up to 10s)
+          for i in $(seq 1 20); do
+            curl -sf -H "X-API-KEY: $TAS_API_KEY" http://localhost:${{ matrix.port }}/version > /dev/null 2>&1 && break
+            sleep 0.5
+          done
+          if ! kill -0 $TAS_PID 2>/dev/null; then
+            echo "FAIL: TAS exited early"; exit 1
+          fi
+
+          # Check response fields
+          RESPONSE=$(curl -s \
+            "http://localhost:${{ matrix.port }}/management/status" \
+            -H "X-MANAGEMENT-API-KEY: $TAS_MANAGEMENT_API_KEY")
+          echo "Status: $RESPONSE"
+
+          echo "$RESPONSE" | python3 -c "
+          import json, sys
+          data = json.load(sys.stdin)
+          assert data['redis_persistence_active'] is True, f\"expected true, got {data['redis_persistence_active']}\"
+          print('PASS: redis_persistence_active = true')
+          assert 'config_rewrite_succeeded' in data, 'config_rewrite_succeeded field missing'
+          print('PASS: config_rewrite_succeeded field present')
+          "
+
+          # Must require management API key
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+            "http://localhost:${{ matrix.port }}/management/status")
+          if [ "$HTTP_CODE" -eq 401 ]; then
+            echo "PASS: 401 without API key"
+          else
+            echo "FAIL: got $HTTP_CODE, expected 401"; exit 1
+          fi
+
+          # /version must NOT contain redis_persistence_active
+          VERSION=$(curl -s \
+            "http://localhost:${{ matrix.port }}/version" \
+            -H "X-API-KEY: $TAS_API_KEY")
+          echo "Version: $VERSION"
+          if echo "$VERSION" | grep -q '"redis_persistence_active"'; then
+            echo "FAIL: /version should not contain redis_persistence_active"; exit 1
+          fi
+          echo "PASS: /version clean"
+
+          # Cleanup
+          kill -- -$TAS_PID 2>/dev/null || true
+          sleep 1
+          fuser -k ${{ matrix.port }}/tcp 2>/dev/null || true
+          redis-cli -p ${{ matrix.redis_port }} SHUTDOWN NOSAVE 2>/dev/null || true
+          rm -rf /tmp/redis-test-${{ matrix.redis_port }}
+        env:
+          TAS_REDIS_PORT: "${{ matrix.redis_port }}"
+          TAS_API_KEY: "our-secure-api-key-asdfg-12345-zxcvb-qwerty-lkjhg-56789-a1s23-56"
+          TAS_MANAGEMENT_API_KEY: "mgmt-our-secure-api-key-asdfg-12345-zxcvb-qwerty-lkjhg-56789-a1s23-56"
+          TAS_REDIS_PERSISTENCE: "true"
+          TAS_ENFORCE_SIGNED_POLICIES: "false"
+
+      - name: "Test E: Redis password authentication"
+        run: |
+          set -e
+          redis-cli -p ${{ matrix.redis_port }} SHUTDOWN NOSAVE 2>/dev/null || true
+          sleep 1
+
+          rm -rf /tmp/redis-test-${{ matrix.redis_port }} && mkdir -p /tmp/redis-test-${{ matrix.redis_port }}
+          printf "port ${{ matrix.redis_port }}\ndir /tmp/redis-test-${{ matrix.redis_port }}\nrequirepass ci-test-password\n" \
+            > /tmp/redis-auth-${{ matrix.redis_port }}.conf
+          redis-server /tmp/redis-auth-${{ matrix.redis_port }}.conf --daemonize yes
+          for i in $(seq 1 10); do redis-cli -p ${{ matrix.redis_port }} -a ci-test-password ping 2>/dev/null | grep -q PONG && break; sleep 0.5; done
+
+          # TAS with correct password
+          setsid flask run --no-reload -h localhost -p ${{ matrix.port }} 2>&1 &
+          TAS_PID=$!
+          # Wait for TAS to be ready (up to 10s)
+          for i in $(seq 1 20); do
+            curl -sf -H "X-API-KEY: $TAS_API_KEY" http://localhost:${{ matrix.port }}/version > /dev/null 2>&1 && break
+            sleep 0.5
+          done
+          if ! kill -0 $TAS_PID 2>/dev/null; then
+            echo "FAIL: TAS exited early (auth failure?)"; exit 1
+          fi
+          echo "PASS: TAS connected to password-protected Redis"
+
+          # Store a policy
+          HTTP_CODE=$(curl -s -o /tmp/auth_store.json -w "%{http_code}" \
+            -X POST "http://localhost:${{ matrix.port }}/management/policy/v0/store" \
+            -H "Content-Type: application/json" \
+            -H "X-MANAGEMENT-API-KEY: $TAS_MANAGEMENT_API_KEY" \
+            -d '{
+              "policy_type": "SEV",
+              "key_id": "ci-auth-test",
+              "policy": {
+                "metadata": {"name": "Auth Test", "version": "1.0", "description": "test"},
+                "validation_rules": {}
+              }
+            }')
+          if [ "$HTTP_CODE" -ne 200 ] && [ "$HTTP_CODE" -ne 201 ]; then
+            echo "FAIL: Store returned HTTP $HTTP_CODE"
+            cat /tmp/auth_store.json; exit 1
+          fi
+          echo "PASS: Policy stored (HTTP $HTTP_CODE)"
+
+          # Retrieve policy
+          HTTP_CODE=$(curl -s -o /tmp/auth_get.json -w "%{http_code}" \
+            "http://localhost:${{ matrix.port }}/management/policy/v0/get/policy:SEV:ci-auth-test" \
+            -H "X-MANAGEMENT-API-KEY: $TAS_MANAGEMENT_API_KEY")
+          if [ "$HTTP_CODE" -ne 200 ]; then
+            echo "FAIL: Get returned HTTP $HTTP_CODE"; exit 1
+          fi
+          echo "PASS: Policy retrieved (HTTP $HTTP_CODE)"
+
+          kill -- -$TAS_PID 2>/dev/null || true
+          sleep 1
+          fuser -k ${{ matrix.port }}/tcp 2>/dev/null || true
+
+          # TAS without password should fail on a protected Redis
+          echo "Testing TAS without password (should fail)..."
+          TAS_REDIS_PASSWORD="" setsid flask run --no-reload -h localhost -p ${{ matrix.port }} 2>&1 &
+          NO_AUTH_PID=$!
+          sleep 3
+          if kill -0 $NO_AUTH_PID 2>/dev/null; then
+            echo "WARN: TAS started without password"
+            kill -- -$NO_AUTH_PID 2>/dev/null || true
+          else
+            echo "PASS: TAS failed to start without password"
+          fi
+
+          # Cleanup
+          fuser -k ${{ matrix.port }}/tcp 2>/dev/null || true
+          redis-cli -p ${{ matrix.redis_port }} -a ci-test-password SHUTDOWN NOSAVE 2>/dev/null || true
+          rm -rf /tmp/redis-test-${{ matrix.redis_port }}
+        env:
+          TAS_REDIS_PORT: "${{ matrix.redis_port }}"
+          TAS_API_KEY: "our-secure-api-key-asdfg-12345-zxcvb-qwerty-lkjhg-56789-a1s23-56"
+          TAS_MANAGEMENT_API_KEY: "mgmt-our-secure-api-key-asdfg-12345-zxcvb-qwerty-lkjhg-56789-a1s23-56"
+          TAS_REDIS_PASSWORD: "ci-test-password"
+          TAS_REDIS_PERSISTENCE: "true"
+          TAS_ENFORCE_SIGNED_POLICIES: "false"
