@@ -11,6 +11,7 @@
 
 
 import base64
+from typing import Tuple
 
 from plugins.kjc.kmip_json_client import KmipJsonClient
 from tas.tas_logging import get_logger
@@ -96,7 +97,7 @@ def _kbm_wrap_secrets(
     client: KmipJsonClient,
     secret_key_id: str,
     rsa_pub_key: bytes,
-) -> tuple[bytes, bytes, bytes, bytes]:
+) -> Tuple[bytes, bytes, bytes, bytes]:
     """
     Wraps a secret using the KMIP server.
 
