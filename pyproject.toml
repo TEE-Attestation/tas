@@ -7,6 +7,7 @@
 [project]
 name = "TAS"
 version = "0.1.0-alpha"
+requires-python = ">=3.8"
 
 [tool.isort]
 profile = "black"

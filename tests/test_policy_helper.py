@@ -7,7 +7,6 @@
 # This file is part of the TEE Attestation Service.
 #
 # This module provides comprehensive unit tests for policy_helper.py, including:
-# - sort_dict_recursively: Testing recursive dictionary sorting functionality
 # - verify_policy_signature: Testing RSA signature verification with PSS/PKCS1v15 padding
 #   including edge cases, error handling, and multi-key scenarios
 #
@@ -17,60 +16,11 @@ import json
 from unittest.mock import MagicMock, patch
 
 import pytest
+import rfc8785
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
-from tas.policy_helper import sort_dict_recursively, verify_policy_signature
-
-
-class TestSortDictRecursively:
-    """Test cases for sort_dict_recursively function."""
-
-    def test_sort_simple_dict(self):
-        """Test sorting a simple dictionary."""
-        input_dict = {"c": 3, "a": 1, "b": 2}
-        expected = {"a": 1, "b": 2, "c": 3}
-        result = sort_dict_recursively(input_dict)
-        assert result == expected
-
-    def test_sort_nested_dict(self):
-        """Test sorting nested dictionaries."""
-        input_dict = {"z": {"y": 2, "x": 1}, "a": {"c": 4, "b": 3}}
-        expected = {"a": {"b": 3, "c": 4}, "z": {"x": 1, "y": 2}}
-        result = sort_dict_recursively(input_dict)
-        assert result == expected
-
-    def test_sort_list_of_dicts(self):
-        """Test sorting list containing dictionaries."""
-        input_list = [{"b": 2, "a": 1}, {"d": 4, "c": 3}]
-        expected = [{"a": 1, "b": 2}, {"c": 3, "d": 4}]
-        result = sort_dict_recursively(input_list)
-        assert result == expected
-
-    def test_sort_mixed_nested_structure(self):
-        """Test sorting complex nested structure with dicts and lists."""
-        input_data = {
-            "z": [{"y": 2, "x": 1}, {"b": 4, "a": 3}],
-            "m": {"n": {"q": 6, "p": 5}, "l": [{"s": 8, "r": 7}]},
-        }
-        expected = {
-            "m": {"l": [{"r": 7, "s": 8}], "n": {"p": 5, "q": 6}},
-            "z": [{"x": 1, "y": 2}, {"a": 3, "b": 4}],
-        }
-        result = sort_dict_recursively(input_data)
-        assert result == expected
-
-    def test_sort_empty_structures(self):
-        """Test sorting empty dictionaries and lists."""
-        assert sort_dict_recursively({}) == {}
-        assert sort_dict_recursively([]) == []
-
-    def test_sort_list_with_mixed_types(self):
-        """Test sorting list with mixed types including dictionaries."""
-        input_list = [{"b": 2, "a": 1}, "string", 42, {"d": 4, "c": 3}]
-        expected = [{"a": 1, "b": 2}, "string", 42, {"c": 3, "d": 4}]
-        result = sort_dict_recursively(input_list)
-        assert result == expected
+from tas.policy_helper import verify_policy_signature
 
 
 class TestVerifyPolicySignature:
@@ -99,12 +49,8 @@ class TestVerifyPolicySignature:
 
     def create_valid_signature(self, policy_data, private_key, padding_scheme="PSS"):
         """Helper method to create a valid signature for test data."""
-        # Extract and sort validation rules
         measurements = policy_data["validation_rules"]
-        sorted_measurements = sort_dict_recursively(measurements)
-        measurements_json = json.dumps(
-            sorted_measurements, sort_keys=True, separators=(",", ":")
-        ).encode("utf-8")
+        measurements_json = rfc8785.dumps(measurements)
 
         # Create signature
         if padding_scheme == "PSS":

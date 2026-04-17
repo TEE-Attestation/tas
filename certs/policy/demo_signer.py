@@ -7,13 +7,11 @@ import json
 import os
 import sys
 
+import rfc8785
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from cryptography.x509.oid import NameOID
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
-from tas.policy_helper import sort_dict_recursively
 
 
 def sign_policy_file(policy_file_path, private_key):
@@ -24,12 +22,9 @@ def sign_policy_file(policy_file_path, private_key):
             policy_data = json.load(f)
 
         measurements = policy_data["validation_rules"]
-        sorted_measurements = sort_dict_recursively(measurements)
 
-        # Convert to JSON bytes for signing
-        measurements_json = json.dumps(
-            sorted_measurements, sort_keys=True, separators=(",", ":")
-        ).encode("utf-8")
+        # Canonicalize for signing (RFC 8785 JCS)
+        measurements_json = rfc8785.dumps(measurements)
 
         # Create signature using PSS padding and SHA384 hash
         signature = private_key.sign(

@@ -14,6 +14,7 @@ import json
 import logging
 import re
 
+import rfc8785
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding
@@ -22,19 +23,6 @@ from .tas_logging import get_logger
 
 # Get logger for this module
 logger = get_logger(__name__)
-
-
-def sort_dict_recursively(obj):
-    """Recursively sort dictionaries and their nested dictionaries."""
-    # logger.debug(f"Sorting object of type: {type(obj)}")
-    if isinstance(obj, dict):
-        # logger.debug(f"Sorting dictionary with {len(obj)} keys")
-        return dict(sorted((k, sort_dict_recursively(v)) for k, v in obj.items()))
-    elif isinstance(obj, list):
-        # logger.debug(f"Sorting list with {len(obj)} items")
-        return [sort_dict_recursively(item) for item in obj]
-    else:
-        return obj
 
 
 def verify_policy_signature(policy_data, public_keys):
@@ -74,13 +62,10 @@ def verify_policy_signature(policy_data, public_keys):
         signature = base64.b64decode(signature_b64)
         logger.debug(f"Decoded signature length: {len(signature)} bytes")
 
-        # Extract and sort the validation rules (same as signing process)
-        logger.debug("Extracting and sorting validation rules")
+        # Canonicalize the validation rules (RFC 8785 JCS)
+        logger.debug("Canonicalizing validation rules")
         measurements = policy_data["validation_rules"]
-        sorted_measurements = sort_dict_recursively(measurements)
-        measurements_json = json.dumps(
-            sorted_measurements, sort_keys=True, separators=(",", ":")
-        ).encode("utf-8")
+        measurements_json = rfc8785.dumps(measurements)
         logger.debug(
             f"Prepared data for verification, length: {len(measurements_json)} bytes"
         )
