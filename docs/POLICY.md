@@ -127,6 +127,12 @@ Policy signing provides:
 - **Authentication**: Verifies policy creator
 - **Non-repudiation**: Prevents denial of policy authorship
 
+### How Signatures Work
+
+Before signing or verifying, TAS canonicalizes the policy JSON using [RFC 8785 (JSON Canonicalization Scheme / JCS)](https://www.rfc-editor.org/rfc/rfc8785). This ensures that logically equivalent JSON objects produce identical byte representations regardless of key ordering or whitespace. The canonicalized bytes are then signed with RSA using SHA-384 and either PSS or PKCS1v15 padding.
+
+> **Note:** Policies must be signed using RFC 8785 canonicalization. Any custom signing tool must canonicalize the policy to be signed with JCS before signing.
+
 ### Step 1: Use TAS Demo Signer
 
 TAS includes a demo signing tool that can generate keys automatically and sign policies. You can use the provided `demo_signer.py` or generate your own keys.
