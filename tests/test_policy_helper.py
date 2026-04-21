@@ -35,7 +35,7 @@ class TestVerifyPolicySignature:
 
     @pytest.fixture
     def sample_policy_data(self):
-        """Sample policy data for testing."""
+        """Policy with signed_data targeting only validation_rules."""
         return {
             "metadata": {"name": "Test Policy", "version": "1.0"},
             "validation_rules": {
@@ -44,18 +44,62 @@ class TestVerifyPolicySignature:
                 "vmpl": {"exact_match": 0},
                 "debug": False,
             },
+            "signature": {
+                "algorithm": "SHA384",
+                "padding": "PSS",
+                "value": "",
+                "signed_data": "validation_rules",
+            },
+        }
+
+    @pytest.fixture
+    def default_signed_policy_data(self):
+        """Policy without signed_data — signature covers all fields."""
+        return {
+            "metadata": {"name": "Test Policy", "version": "1.0"},
+            "validation_rules": {
+                "measurement": {"exact_match": "12ab34cd56ef"},
+                "version": {"min_value": 3},
+            },
             "signature": {"algorithm": "SHA384", "padding": "PSS", "value": ""},
+        }
+
+    @pytest.fixture
+    def multi_signed_policy_data(self):
+        """Policy with signed_data as a list of multiple fields."""
+        return {
+            "metadata": {"name": "Test Policy", "version": "1.0"},
+            "validation_rules": {
+                "measurement": {"exact_match": "12ab34cd56ef"},
+            },
+            "signature": {
+                "algorithm": "SHA384",
+                "padding": "PSS",
+                "value": "",
+                "signed_data": ["metadata", "validation_rules"],
+            },
         }
 
     def create_valid_signature(self, policy_data, private_key, padding_scheme="PSS"):
         """Helper method to create a valid signature for test data."""
-        measurements = policy_data["validation_rules"]
-        measurements_json = rfc8785.dumps(measurements)
+        signed_data_spec = policy_data.get("signature", {}).get("signed_data")
+
+        if signed_data_spec is not None:
+            if isinstance(signed_data_spec, str):
+                signed_data_spec = [signed_data_spec]
+            if len(signed_data_spec) == 1:
+                data_to_sign = policy_data[signed_data_spec[0]]
+            else:
+                data_to_sign = {k: policy_data[k] for k in sorted(signed_data_spec)}
+        else:
+            data_to_sign = {k: v for k, v in policy_data.items() if k != "signature"}
+
+        data_json = rfc8785.dumps(data_to_sign)
 
         # Create signature
         if padding_scheme == "PSS":
             signature = private_key.sign(
-                measurements_json,
+                data_json,
                 padding.PSS(
                     mgf=padding.MGF1(hashes.SHA384()),
                     salt_length=padding.PSS.MAX_LENGTH,
@@ -64,7 +108,7 @@ class TestVerifyPolicySignature:
             )
         else:  # PKCS1v15
             signature = private_key.sign(
-                measurements_json,
+                data_json,
                 padding.PKCS1v15(),
                 hashes.SHA384(),
             )
@@ -327,3 +371,92 @@ class TestVerifyPolicySignature:
 
         assert result1 is True
         assert result2 is True
+
+    def test_default_signs_all_fields(self, rsa_key_pair, default_signed_policy_data):
+        """Test that without signed_data, signature covers all fields except signature."""
+        private_key, public_key = rsa_key_pair
+
+        signature_b64 = self.create_valid_signature(
+            default_signed_policy_data, private_key
+        )
+        default_signed_policy_data["signature"]["value"] = signature_b64
+
+        public_keys = [("RSA", "test_key.pem", public_key)]
+        result = verify_policy_signature(default_signed_policy_data, public_keys)
+        assert result is True
+
+    def test_default_metadata_change_breaks_signature(
+        self, rsa_key_pair, default_signed_policy_data
+    ):
+        """Test that modifying metadata breaks signature when no signed_data specified."""
+        private_key, public_key = rsa_key_pair
+
+        signature_b64 = self.create_valid_signature(
+            default_signed_policy_data, private_key
+        )
+        default_signed_policy_data["signature"]["value"] = signature_b64
+
+        # Modify metadata after signing
+        default_signed_policy_data["metadata"]["version"] = "2.0"
+
+        public_keys = [("RSA", "test_key.pem", public_key)]
+        result = verify_policy_signature(default_signed_policy_data, public_keys)
+        assert result is False
+
+    def test_signed_data_single_field_string(self, rsa_key_pair, sample_policy_data):
+        """Test signed_data as a single string field name."""
+        private_key, public_key = rsa_key_pair
+
+        signature_b64 = self.create_valid_signature(sample_policy_data, private_key)
+        sample_policy_data["signature"]["value"] = signature_b64
+
+        public_keys = [("RSA", "test_key.pem", public_key)]
+        result = verify_policy_signature(sample_policy_data, public_keys)
+        assert result is True
+
+    def test_signed_data_allows_metadata_change(self, rsa_key_pair, sample_policy_data):
+        """Test that with signed_data=validation_rules, changing metadata does not break sig."""
+        private_key, public_key = rsa_key_pair
+
+        signature_b64 = self.create_valid_signature(sample_policy_data, private_key)
+        sample_policy_data["signature"]["value"] = signature_b64
+
+        # Modify metadata after signing - should NOT break signature
+        sample_policy_data["metadata"]["version"] = "2.0"
+
+        public_keys = [("RSA", "test_key.pem", public_key)]
+        result = verify_policy_signature(sample_policy_data, public_keys)
+        assert result is True
+
+    def test_signed_data_list_of_fields(self, rsa_key_pair, multi_signed_policy_data):
+        """Test signed_data as a list of multiple field names."""
+        private_key, public_key = rsa_key_pair
+
+        signature_b64 = self.create_valid_signature(
+            multi_signed_policy_data, private_key
+        )
+        multi_signed_policy_data["signature"]["value"] = signature_b64
+
+        public_keys = [("RSA", "test_key.pem", public_key)]
+        result = verify_policy_signature(multi_signed_policy_data, public_keys)
+        assert result is True
+
+    def test_signed_data_missing_field(self, rsa_key_pair):
+        """Test that signed_data referencing a missing field returns False."""
+        _, public_key = rsa_key_pair
+
+        policy_data = {
+            "validation_rules": {
+                "measurement": {"exact_match": "12ab34cd56ef"},
+            },
+            "signature": {
+                "algorithm": "SHA384",
+                "padding": "PSS",
+                "value": base64.b64encode(b"test").decode("utf-8"),
+                "signed_data": "nonexistent_field",
+            },
+        }
+
+        public_keys = [("RSA", "test_key.pem", public_key)]
+        result = verify_policy_signature(policy_data, public_keys)
+        assert result is False

@@ -21,14 +21,15 @@ def sign_policy_file(policy_file_path, private_key):
         with open(policy_file_path, "r") as f:
             policy_data = json.load(f)
 
-        measurements = policy_data["validation_rules"]
+        # Build the data to sign: all top-level fields except "signature" in case user wants to reuse a policy that is already signed
+        data_to_sign = {k: v for k, v in policy_data.items() if k != "signature"}
 
         # Canonicalize for signing (RFC 8785 JCS)
-        measurements_json = rfc8785.dumps(measurements)
+        data_json = rfc8785.dumps(data_to_sign)
 
         # Create signature using PSS padding and SHA384 hash
         signature = private_key.sign(
-            measurements_json,
+            data_json,
             padding.PSS(
                 mgf=padding.MGF1(hashes.SHA384()), salt_length=padding.PSS.MAX_LENGTH
             ),
@@ -158,7 +159,6 @@ def main():
                 "algorithm": "SHA384",
                 "padding": "PSS",
                 "value": signature_data,
-                "signed_data": "validation_rules",
             }
         }
 
