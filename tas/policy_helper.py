@@ -62,12 +62,50 @@ def verify_policy_signature(policy_data, public_keys):
         signature = base64.b64decode(signature_b64)
         logger.debug(f"Decoded signature length: {len(signature)} bytes")
 
-        # Canonicalize the validation rules (RFC 8785 JCS)
-        logger.debug("Canonicalizing validation rules")
-        measurements = policy_data["validation_rules"]
-        measurements_json = rfc8785.dumps(measurements)
+        # Determine what data is covered by the signature
+        signed_data_spec = signature_info.get("signed_data")
+
+        if signed_data_spec is not None:
+            # signed_data specified: sign only those fields
+            if isinstance(signed_data_spec, str):
+                signed_data_spec = [signed_data_spec]
+
+            if not isinstance(signed_data_spec, list) or not signed_data_spec:
+                logger.error(
+                    "signed_data must be a non-empty string or list of strings"
+                )
+                return False
+
+            logger.debug(f"Signature covers specified fields: {signed_data_spec}")
+            if len(signed_data_spec) == 1:
+                # Single field: canonicalize the field value directly (backward compatible)
+                field = signed_data_spec[0]
+                if field not in policy_data:
+                    logger.error(
+                        f"signed_data field '{field}' not found in policy data"
+                    )
+                    return False
+                data_to_verify = policy_data[field]
+            else:
+                # Multiple fields: build a dict of the specified fields
+                data_to_verify = {}
+                for field in sorted(signed_data_spec):
+                    if field not in policy_data:
+                        logger.error(
+                            f"signed_data field '{field}' not found in policy data"
+                        )
+                        return False
+                    data_to_verify[field] = policy_data[field]
+        else:
+            # Default: signature covers all top-level fields except "signature"
+            logger.debug(
+                "No signed_data specified, signature covers all fields except 'signature'"
+            )
+            data_to_verify = {k: v for k, v in policy_data.items() if k != "signature"}
+
+        signed_json = rfc8785.dumps(data_to_verify)
         logger.debug(
-            f"Prepared data for verification, length: {len(measurements_json)} bytes"
+            f"Prepared data for verification, length: {len(signed_json)} bytes"
         )
 
         # Determine padding scheme from signature info
@@ -84,7 +122,7 @@ def verify_policy_signature(policy_data, public_keys):
                     logger.debug("Using PSS padding for verification")
                     public_key.verify(
                         signature,
-                        measurements_json,
+                        signed_json,
                         padding.PSS(
                             mgf=padding.MGF1(hashes.SHA384()),
                             salt_length=padding.PSS.MAX_LENGTH,
@@ -95,7 +133,7 @@ def verify_policy_signature(policy_data, public_keys):
                     logger.debug("Using PKCS1v15 padding for verification")
                     public_key.verify(
                         signature,
-                        measurements_json,
+                        signed_json,
                         padding.PKCS1v15(),
                         hashes.SHA384(),
                     )

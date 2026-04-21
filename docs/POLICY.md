@@ -100,7 +100,7 @@ Policies are stored in Redis and referenced during attestation validation to det
 | `algorithm` | string | Yes | Algorithm used |
 | `padding` | string | Yes | Padding (either PSS or PKCS1v15) |
 | `value` | string | Yes | Base64 encoded signature |
-| `signed_data` | string | No | Specifies which structures were signed, not implemented yet |
+| `signed_data` | string or list | No | Specifies which fields are signed. If omitted, the signature covers all top-level fields except `signature`. Can be a single field name (e.g. `"validation_rules"`) or a list (e.g. `["metadata", "validation_rules"]`). |
 
 ### TDX Specific Fields
 ##### TCB
@@ -130,6 +130,10 @@ Policy signing provides:
 ### How Signatures Work
 
 Before signing or verifying, TAS canonicalizes the policy JSON using [RFC 8785 (JSON Canonicalization Scheme / JCS)](https://www.rfc-editor.org/rfc/rfc8785). This ensures that logically equivalent JSON objects produce identical byte representations regardless of key ordering or whitespace. The canonicalized bytes are then signed with RSA using SHA-384 and either PSS or PKCS1v15 padding.
+
+By default, the signature covers **all top-level fields** in the policy (metadata, validation_rules, etc.) except the `signature` field itself. This means any change to the policy will invalidate the signature.
+
+If you need the signature to cover only specific fields, you can add a `signed_data` field to the signature object specifying which field(s) to sign. For example, `"signed_data": "validation_rules"` will sign only the validation rules, allowing metadata to be changed without invalidating the signature.
 
 > **Note:** Policies must be signed using RFC 8785 canonicalization. Any custom signing tool must canonicalize the policy to be signed with JCS before signing.
 
@@ -180,8 +184,7 @@ cat your-policy.json.sig
 #   "signature": {
 #     "algorithm": "SHA384",
 #     "padding": "PSS", 
-#     "value": "base64-encoded-signature...",
-#     "signed_data": "validation_rules"
+#     "value": "base64-encoded-signature..."
 #   }
 # }
 
