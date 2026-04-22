@@ -21,18 +21,16 @@ CLIENT_API_KEY = "a" * 64
 MGMT_API_KEY = "b" * 64
 
 VALID_POLICY_PAYLOAD = {
-    "policy_type": "SEV",
-    "key_id": "test-key-1",
-    "policy": {
-        "metadata": {
-            "name": "Test Policy",
-            "version": "1.0",
-            "description": "A test policy",
-        },
-        "validation_rules": {
-            "host_data": {"exact_match": "abc123"},
-            "policy": {"debug_allowed": False},
-        },
+    "metadata": {
+        "name": "Test Policy",
+        "version": "1.0",
+        "description": "A test policy",
+        "policy_type": "SEV",
+        "key_id": "test-key-1",
+    },
+    "validation_rules": {
+        "host_data": {"exact_match": "abc123"},
+        "policy": {"debug_allowed": False},
     },
 }
 
@@ -141,7 +139,8 @@ class TestManagementStorePolicy:
         assert resp.status_code == 400
 
     def test_store_policy_missing_policy_type(self, client, mgmt_headers):
-        payload = {**VALID_POLICY_PAYLOAD, "policy_type": None}
+        payload = json.loads(json.dumps(VALID_POLICY_PAYLOAD))
+        del payload["metadata"]["policy_type"]
         resp = client.post(
             "/management/policy/v0/store",
             headers=mgmt_headers,
@@ -150,7 +149,8 @@ class TestManagementStorePolicy:
         assert resp.status_code == 400
 
     def test_store_policy_invalid_policy_type(self, client, mgmt_headers):
-        payload = {**VALID_POLICY_PAYLOAD, "policy_type": "bad chars!@#"}
+        payload = json.loads(json.dumps(VALID_POLICY_PAYLOAD))
+        payload["metadata"]["policy_type"] = "bad chars!@#"
         resp = client.post(
             "/management/policy/v0/store",
             headers=mgmt_headers,
@@ -164,7 +164,7 @@ class TestManagementGetPolicy:
         # Store a policy first
         app.extensions["redis"].set(
             "policy:SEV:test-key-1",
-            json.dumps(VALID_POLICY_PAYLOAD["policy"]),
+            json.dumps(VALID_POLICY_PAYLOAD),
         )
         resp = client.get(
             "/management/policy/v0/get/policy:SEV:test-key-1",
@@ -200,7 +200,7 @@ class TestManagementListPolicies:
     def test_list_policies_with_data(self, client, mgmt_headers, app):
         app.extensions["redis"].set(
             "policy:SEV:key1",
-            json.dumps(VALID_POLICY_PAYLOAD["policy"]),
+            json.dumps(VALID_POLICY_PAYLOAD),
         )
         resp = client.get("/management/policy/v0/list", headers=mgmt_headers)
         assert resp.status_code == 200
@@ -212,7 +212,7 @@ class TestManagementDeletePolicy:
     def test_delete_policy_success(self, client, mgmt_headers, app):
         app.extensions["redis"].set(
             "policy:SEV:to-delete",
-            json.dumps(VALID_POLICY_PAYLOAD["policy"]),
+            json.dumps(VALID_POLICY_PAYLOAD),
         )
         resp = client.delete(
             "/management/policy/v0/delete/policy:SEV:to-delete",
@@ -270,7 +270,7 @@ class TestDeprecatedRoutes:
     def test_deprecated_get_has_deprecation_header(self, client, mgmt_headers, app):
         app.extensions["redis"].set(
             "policy:SEV:dep-test",
-            json.dumps(VALID_POLICY_PAYLOAD["policy"]),
+            json.dumps(VALID_POLICY_PAYLOAD),
         )
         resp = client.get(
             "/policy/v0/get/policy:SEV:dep-test",
@@ -284,7 +284,7 @@ class TestDeprecatedRoutes:
     def test_deprecated_delete_has_deprecation_header(self, client, mgmt_headers, app):
         app.extensions["redis"].set(
             "policy:SEV:dep-del",
-            json.dumps(VALID_POLICY_PAYLOAD["policy"]),
+            json.dumps(VALID_POLICY_PAYLOAD),
         )
         resp = client.delete(
             "/policy/v0/delete/policy:SEV:dep-del",

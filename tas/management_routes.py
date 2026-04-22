@@ -40,47 +40,10 @@ def store_policy():
     if auth_response:
         return auth_response
 
-    data = request.get_json()
-    if not data:
+    policy = request.get_json()
+    if not policy:
         logger.error("Policy store request missing JSON body")
         return jsonify({"error": "Request body is required"}), 400
-
-    policy_type = data.get("policy_type")
-    if not policy_type:
-        logger.error("Policy store request missing policy_type")
-        return jsonify({"error": "Policy type is required (e.g. SEV, TDX)"}), 400
-
-    if not POLICY_KEY_COMPONENT_RE.match(str(policy_type)):
-        logger.error(f"Invalid policy_type: {policy_type}")
-        return (
-            jsonify(
-                {
-                    "error": "Invalid policy_type. Use only alphanumeric characters, hyphens, underscores, and dots"
-                }
-            ),
-            400,
-        )
-
-    key_id = data.get("key_id")
-    if not key_id:
-        logger.error("Policy store request missing key_id")
-        return jsonify({"error": "Key ID is required"}), 400
-
-    if not POLICY_KEY_COMPONENT_RE.match(str(key_id)):
-        logger.error(f"Invalid key_id: {key_id}")
-        return (
-            jsonify(
-                {
-                    "error": "Invalid key_id. Use only alphanumeric characters, hyphens, underscores, and dots"
-                }
-            ),
-            400,
-        )
-
-    policy = data.get("policy")
-    if not policy:
-        logger.error("Policy store request missing policy data")
-        return jsonify({"error": "Policy data is required"}), 400
 
     if not isinstance(policy, dict):
         logger.error("Policy data is not a valid JSON object")
@@ -93,6 +56,43 @@ def store_policy():
     if "validation_rules" not in policy:
         logger.error("Policy missing required 'validation_rules' section")
         return jsonify({"error": "Policy must contain 'validation_rules' section"}), 400
+
+    metadata = policy["metadata"]
+
+    policy_type = metadata.get("policy_type")
+    if not policy_type:
+        logger.error("Policy metadata missing policy_type")
+        return (
+            jsonify({"error": "Policy type is required in metadata (e.g. SEV, TDX)"}),
+            400,
+        )
+
+    if not POLICY_KEY_COMPONENT_RE.match(str(policy_type)):
+        logger.error(f"Invalid policy_type: {policy_type}")
+        return (
+            jsonify(
+                {
+                    "error": "Invalid policy_type. Use only alphanumeric characters, hyphens, underscores, and dots"
+                }
+            ),
+            400,
+        )
+
+    key_id = metadata.get("key_id")
+    if not key_id:
+        logger.error("Policy metadata missing key_id")
+        return jsonify({"error": "Key ID is required in metadata"}), 400
+
+    if not POLICY_KEY_COMPONENT_RE.match(str(key_id)):
+        logger.error(f"Invalid key_id: {key_id}")
+        return (
+            jsonify(
+                {
+                    "error": "Invalid key_id. Use only alphanumeric characters, hyphens, underscores, and dots"
+                }
+            ),
+            400,
+        )
 
     is_signed = "signature" in policy
     warning_message = None

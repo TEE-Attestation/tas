@@ -84,6 +84,14 @@ components:
         name:
           type: string
           description: Policy name
+        policy_type:
+          type: string
+          description: TEE type (e.g. SEV, TDX)
+          example: SEV
+        key_id:
+          type: string
+          description: Identifier of the key to retrieve after successful attestation
+            against policy
         version:
           type: string
           description: Policy version
@@ -102,6 +110,8 @@ components:
       required:
       - name
       - version
+      - policy_type
+      - key_id
     PolicyValidationRules:
       type: object
       properties:
@@ -157,22 +167,6 @@ components:
       required:
       - metadata
       - validation_rules
-    PolicyStoreRequest:
-      type: object
-      properties:
-        policy_type:
-          type: string
-          description: Type of policy
-          example: SEV
-        key_id:
-          type: string
-          description: Identifier of the key to retrieve after successful attestation against policy
-        policy:
-          $ref: '#/components/schemas/PolicyData'
-      required:
-      - policy_type
-      - key_id
-      - policy
     VersionResponse:
       type: object
       properties:
@@ -299,7 +293,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/PolicyStoreRequest'
+              $ref: '#/components/schemas/PolicyData'
       responses:
         '201':
           description: Policy stored successfully
@@ -543,7 +537,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/PolicyStoreRequest'
+              $ref: '#/components/schemas/PolicyData'
       responses:
         '201':
           description: Policy stored successfully
