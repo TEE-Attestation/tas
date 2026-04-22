@@ -1,6 +1,8 @@
 {
   "metadata": {
     "name": "Intel TDX Security Policy",
+    "policy_type": "TDX",
+    "key_id": "test-key-1",
     "version": "1.0",
     "description": "Example security policy for validating Intel TDX quotes",
     "created_by": "HPE",

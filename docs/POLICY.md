@@ -36,6 +36,8 @@ Policies are stored in Redis and referenced during attestation validation to det
     "name": "SEV Example Policy",
     "version": "1.0",
     "description": "Policy description",
+    "policy_type": "SEV",
+    "key_id": "my-secret-id",
     "created_date": "2024-09-09",
     "last_updated": "2024-09-09"
   },
@@ -78,15 +80,17 @@ Policies are stored in Redis and referenced during attestation validation to det
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `policy.metadata` | object | Yes | Policy metadata |
-| `policy.validation_rules` | object | Yes | Attestation validation criteria |
-| `policy.signature` | object | No | Digital signature for integrity |
+| `metadata` | object | Yes | Policy metadata (must include `policy_type` and `key_id`) |
+| `validation_rules` | object | Yes | Attestation validation criteria |
+| `signature` | object | No | Digital signature for integrity |
 
 ### Metadata Fields
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `name` | string | Yes | Human-readable policy name |
+| `policy_type` | string | Yes | TEE type (e.g. `SEV`, `TDX`) |
+| `key_id` | string | Yes | The secret ID this policy is used to release (must match the secret registered in KMS or HSM) |
 | `version` | string | No | Policy version |
 | `description` | string | No | Policy description |
 | `created_by` | string | No | Policy creator |
@@ -220,51 +224,47 @@ python3 demo_signer.py --cert your-policy.json
 ```
 ## Registering Policies
 
-To register a policy with TAS, you must wrap your **signed policy from the previous step** in a registration payload. This payload specifies the policy type and associates it with a secret ID.
+To register a policy with TAS, POST the policy JSON directly to the store endpoint. The `policy_type` and `key_id` are read from the policy's `metadata` section.
 
 Policy registration uses the **management API**, which requires the `X-MANAGEMENT-API-KEY` header (separate from the client `X-API-KEY`).
 
 ### Registration Payload Format
 
-**Important:** The `policy` field contains your complete signed policy from Step 2 above (including metadata, validation_rules, and signature).
+The request body is the complete signed policy from Step 2 above:
 
 ```json
 {
-  "policy_type": "SEV",
-  "key_id": "my-secret-id",
-  "policy": {
-    // This is your complete signed policy from the signing step above
-    "metadata": {
-      "name": "SEV Production Policy",
-      "version": "1.0",
-      "description": "Production policy for SEV attestation",
-      "created_date": "2024-09-09"
+  "metadata": {
+    "name": "SEV Production Policy",
+    "version": "1.0",
+    "description": "Production policy for SEV attestation",
+    "policy_type": "SEV",
+    "key_id": "my-secret-id",
+    "created_date": "2024-09-09"
+  },
+  "validation_rules": {
+    "measurement": {
+      "exact_match": "a1b2c3d4e5f6789..."
     },
-    "validation_rules": {
-      "measurement": {
-        "exact_match": "a1b2c3d4e5f6789..."
-      },
-      "policy": {
-        "debug_allowed": false,
-        "migrate_ma_allowed": false
-      }
-    },
-    "signature": {
-      "algorithm": "SHA384",
-      "padding": "PSS",
-      "value": "base64-encoded-signature..."
+    "policy": {
+      "debug_allowed": false,
+      "migrate_ma_allowed": false
     }
+  },
+  "signature": {
+    "algorithm": "SHA384",
+    "padding": "PSS",
+    "value": "base64-encoded-signature..."
   }
 }
 ```
 
-### Registration Payload Fields
+### Required Metadata Fields for Registration
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `policy_type` | string | Yes | TEE type: either "SEV" or "TDX" |
-| `key_id` | string | Yes | **The secret ID that this policy will be used to release** (must match the secret registered in KMS or HSM) |
-| `policy` | object | Yes | **Your complete signed policy from Step 2** (the entire policy JSON including signature) |
+| `metadata.policy_type` | string | Yes | TEE type: either "SEV" or "TDX" |
+| `metadata.key_id` | string | Yes | **The secret ID that this policy will be used to release** (must match the secret registered in KMS or HSM) |
 
 **How it works:** When a client requests a secret, TAS uses the policy associated with that secret's `key_id` to validate the attestation evidence before releasing the secret. The `key_id` must exist in the key manager that TAS KBM is connected to.
 
@@ -283,14 +283,14 @@ curl -X POST http://localhost:5001/management/policy/v0/store \
   -H "Content-Type: application/json" \
   -H "X-MANAGEMENT-API-KEY: $TAS_MANAGEMENT_API_KEY" \
   -d  '{
-    "policy_type": "SEV",
-    "key_id": "...",
-    "policy": {
-      "metadata": {...},
-      "validation_rules": {...},
-      "signature": {...}
+    "metadata": {
+      "name": "My Policy",
+      "policy_type": "SEV",
+      "key_id": "my-secret-id"
+    },
+    "validation_rules": {...},
+    "signature": {...}
   }'
-  
 
 # Expected response:
 # {"message": "Policy 'policy:policy_type:key_id' stored successfully"}

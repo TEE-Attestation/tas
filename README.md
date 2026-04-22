@@ -393,15 +393,16 @@ curl -X POST \
   -H "Content-Type: application/json" \
   -H "X-MANAGEMENT-API-KEY: your-management-key" \
   -d '{
-    "policy_type": "SEV",
-    "key_id": "my-key-1",
-    "policy": {
-      "metadata": {"name": "Test Policy", "version": "1.0"},
-      "signature": {...},
-      "validation_rules": {
-        "measurement": {"exact_match": "abc123"},
-        "debug": false
-      }
+    "metadata": {
+      "name": "Test Policy",
+      "version": "1.0",
+      "policy_type": "...",
+      "key_id": "my-key-1"
+    },
+    "signature": {...},
+    "validation_rules": {
+      "measurement": {"exact_match": "abc123"},
+      "debug": false
     }
   }' \
   http://localhost:5000/management/policy/v0/store
