@@ -453,12 +453,12 @@ def get_policy_from_redis(redis_client: redis.StrictRedis, policy_key: str):
 
             if not signature_valid:
                 logger.error(
-                    f"Policy signature verification failed for policy '{policy_key}'"
+                    f"Policy signature verification failed for: '{policy_key}'"
                 )
                 raise ValueError("Policy signature verification failed")
             else:
                 logger.info(
-                    f"Policy signature verification successful for policy '{policy_key}'"
+                    f"Policy signature verification successful for: '{policy_key}'"
                 )
     return policy_json
 
@@ -532,7 +532,7 @@ def sev_vm_verify(
     try:
         policy_json = get_policy_from_redis(redis_client, policy_key)
     except ValueError as e:
-        logger.error(f"Policy validation failed: {e}")
+        logger.error(f"Policy fetching failed for: '{policy_key}': {e}")
         return False, str(e)
 
     # Use provided report_data or fall back to nonce
@@ -607,7 +607,7 @@ def tdx_vm_verify(
     try:
         policy_json = get_policy_from_redis(redis_client, policy_key)
     except ValueError as e:
-        logger.error(f"Policy validation failed: {e}")
+        logger.error(f"Policy fetching failed for: '{policy_key}': {e}")
         return False, str(e)
     update = (
         policy_json.get("validation_rules", {}).get("tcb", {}).get("update", "standard")
