@@ -239,16 +239,14 @@ jobs:
             -H "Content-Type: application/json" \
             -H "X-MANAGEMENT-API-KEY: $TAS_MANAGEMENT_API_KEY" \
             -d '{
-              "policy_type": "SEV",
-              "key_id": "ci-persist-test",
-              "policy": {
-                "metadata": {
-                  "name": "CI Persistence Test",
-                  "version": "1.0",
-                  "description": "Integration test policy"
-                },
-                "validation_rules": {"host_data": {"exact_match": "test"}}
-              }
+              "metadata": {
+                "name": "CI Persistence Test",
+                "version": "1.0",
+                "description": "Integration test policy",
+                "policy_type": "SEV",
+                "key_id": "ci-persist-test"
+              },
+              "validation_rules": {"host_data": {"exact_match": "test"}}
             }')
           if [ "$HTTP_CODE" -ne 200 ] && [ "$HTTP_CODE" -ne 201 ]; then
             echo "FAIL: Store policy returned HTTP $HTTP_CODE"
@@ -462,12 +460,14 @@ jobs:
             -H "Content-Type: application/json" \
             -H "X-MANAGEMENT-API-KEY: $TAS_MANAGEMENT_API_KEY" \
             -d '{
-              "policy_type": "SEV",
-              "key_id": "ci-auth-test",
-              "policy": {
-                "metadata": {"name": "Auth Test", "version": "1.0", "description": "test"},
-                "validation_rules": {}
-              }
+              "metadata": {
+                "name": "Auth Test",
+                "version": "1.0",
+                "description": "test",
+                "policy_type": "SEV",
+                "key_id": "ci-auth-test"
+              },
+              "validation_rules": {}
             }')
           if [ "$HTTP_CODE" -ne 200 ] && [ "$HTTP_CODE" -ne 201 ]; then
             echo "FAIL: Store returned HTTP $HTTP_CODE"
