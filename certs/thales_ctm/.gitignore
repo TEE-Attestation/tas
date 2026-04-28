@@ -1,0 +1,9 @@
+# Add TAS certificates to this directory
+#
+# Ignore everything in this directory
+*
+# Except this file
+!dummy_ca_cert.pem
+!dummy_cert.pem
+!dummy_key.pem
+!.gitignore
