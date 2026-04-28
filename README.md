@@ -447,6 +447,7 @@ TAS supports pluggable Key Broker Modules (KBM) for different backend key manage
 | Plugin | Description | Use Case |
 |--------|-------------|----------|
 | `tas_kbm_kmip_json` | KMIP JSON protocol backend | Production with KMIP servers (Cosmain KMS, etc.) |
+| `tas_kbm_thales_ctm` | Thales CipherTrust Manager backend | Production with Thales CTM for key wrapping and export |
 | `tas_kbm_mock` | Software-based mock | Development and testing |
 
 ### Plugin Interface

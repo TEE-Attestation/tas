@@ -1,0 +1,11 @@
+debug: false
+host: "${THALES_CTM_HOST}"
+username: "${THALES_CTM_USERNAME}"
+password: "${THALES_CTM_PASSWORD}"
+domain: "root"
+verify_ssl: true
+certificate_login: false
+ca_certfile: "certs/thales_ctm/ca_cert.pem"
+auth_certfile: "certs/thales_ctm/client_cert.pem"
+auth_keyfile: "certs/thales_ctm/client_key.pem"
+key_wrap_algorithm: "AES-KWP"

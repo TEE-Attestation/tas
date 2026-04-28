@@ -77,33 +77,21 @@ def verify_policy_signature(policy_data, public_keys):
                 return False
 
             logger.debug(f"Signature covers specified fields: {signed_data_spec}")
-            if len(signed_data_spec) == 1:
-                # Single field: canonicalize the field value directly (backward compatible)
-                field = signed_data_spec[0]
+            for field in signed_data_spec:
                 if field not in policy_data:
                     logger.error(
                         f"signed_data field '{field}' not found in policy data"
                     )
                     return False
-                data_to_verify = policy_data[field]
-            else:
-                # Multiple fields: build a dict of the specified fields
-                data_to_verify = {}
-                for field in sorted(signed_data_spec):
-                    if field not in policy_data:
-                        logger.error(
-                            f"signed_data field '{field}' not found in policy data"
-                        )
-                        return False
-                    data_to_verify[field] = policy_data[field]
+
+            data_to_verify = {f: policy_data[f] for f in signed_data_spec}
+            signed_json = canonicalize_policy(data_to_verify)
         else:
             # Default: signature covers all top-level fields except "signature"
             logger.debug(
                 "No signed_data specified, signature covers all fields except 'signature'"
             )
-            data_to_verify = {k: v for k, v in policy_data.items() if k != "signature"}
-
-        signed_json = rfc8785.dumps(data_to_verify)
+            signed_json = canonicalize_policy(policy_data)
         logger.debug(
             f"Prepared data for verification, length: {len(signed_json)} bytes"
         )
@@ -166,6 +154,11 @@ POLICY_KEY_COMPONENT_RE = re.compile(r"^[A-Za-z0-9_.-]+\Z")
 
 # Regex for validating a full policy key: policy:{type}:{key_id}
 POLICY_KEY_RE = re.compile(r"^policy:[A-Za-z0-9_-]+:[A-Za-z0-9_.-]+\Z")
+
+
+def canonicalize_policy(policy_data):
+    """Return the RFC 8785 (JCS) canonical bytes of a policy, excluding the signature field."""
+    return rfc8785.dumps({k: v for k, v in policy_data.items() if k != "signature"})
 
 
 def validate_policy_key(policy_key):
