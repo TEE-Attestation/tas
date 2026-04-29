@@ -127,8 +127,12 @@ def store_policy():
     try:
         redis_client = _get_redis()
         policy_key = f"policy:{policy_type}:{key_id}"
-        policy_json = json.dumps(policy)
 
+        if redis_client.get(policy_key) is not None:
+            logger.error(f"Policy '{policy_key}' already exists in Redis")
+            return jsonify({"error": f"Policy '{policy_key}' already exists"}), 409
+
+        policy_json = json.dumps(policy)
         redis_client.set(policy_key, policy_json)
 
         logger.info(f"Stored policy '{policy_key}' in Redis")
