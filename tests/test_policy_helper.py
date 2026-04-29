@@ -16,7 +16,6 @@ import json
 from unittest.mock import MagicMock, patch
 
 import pytest
-import rfc8785
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
@@ -82,19 +81,18 @@ class TestVerifyPolicySignature:
 
     def create_valid_signature(self, policy_data, private_key, padding_scheme="PSS"):
         """Helper method to create a valid signature for test data."""
+        from tas.policy_helper import canonicalize_policy
+
         signed_data_spec = policy_data.get("signature", {}).get("signed_data")
 
         if signed_data_spec is not None:
             if isinstance(signed_data_spec, str):
                 signed_data_spec = [signed_data_spec]
-            if len(signed_data_spec) == 1:
-                data_to_sign = policy_data[signed_data_spec[0]]
-            else:
-                data_to_sign = {k: policy_data[k] for k in sorted(signed_data_spec)}
+            data_to_sign = {k: policy_data[k] for k in signed_data_spec}
         else:
-            data_to_sign = {k: v for k, v in policy_data.items() if k != "signature"}
+            data_to_sign = policy_data
 
-        data_json = rfc8785.dumps(data_to_sign)
+        data_json = canonicalize_policy(data_to_sign)
 
         # Create signature
         if padding_scheme == "PSS":
