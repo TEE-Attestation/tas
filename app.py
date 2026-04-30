@@ -24,6 +24,7 @@ from tas.auth import authenticate_request, init_client_auth, init_management_aut
 from tas.config_loader import load_configuration
 from tas.deprecated_routes import deprecated_policy_bp
 from tas.error_handlers import register_error_handlers
+from tas.experimental_routes import experimental_bp
 from tas.management_routes import management_bp
 from tas.tas_logging import configure_external_logging, setup_logging
 from tas.tas_vm import vm_verify
@@ -197,6 +198,9 @@ app.extensions["redis_config_rewrite_ok"] = _redis_config_rewrite_ok
 # Register blueprints
 app.register_blueprint(management_bp)
 app.register_blueprint(deprecated_policy_bp)
+if app.config.get("TAS_EXPERIMENTAL_FEATURES", False):
+    app.register_blueprint(experimental_bp)
+    logger.info("Experimental routes enabled")
 
 # log discovered plugins for debugging
 logger.debug("Discovered plugins:")
