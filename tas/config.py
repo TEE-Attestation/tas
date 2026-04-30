@@ -51,6 +51,7 @@ class BaseConfig:
     )
     TAS_KBM_PLUGIN = "tas_kbm_mock"  # default KBM plugin module name
     TAS_EXTRA_PLUGIN_DIR = None  # optional extra directory to search for plugins
+    TAS_EXPERIMENTAL_FEATURES = False  # enable experimental API routes
 
     def __init__(self):
         logger.debug("Initializing BaseConfig with default TAS settings")
