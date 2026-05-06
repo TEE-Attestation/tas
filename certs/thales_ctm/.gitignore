@@ -1,0 +1,7 @@
+# Place Thales CTM certificates in this directory.
+# See README.md for details on obtaining and naming them.
+#
+# Ignore everything in this directory except this file and the README
+*
+!.gitignore
+!README.md
