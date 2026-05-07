@@ -57,41 +57,20 @@ def verify_policy_signature(policy_data, public_keys):
             f"Signature padding scheme: {signature_info.get('padding', 'PSS')}"
         )
 
+        # Reject deprecated signed_data field
+        if "signed_data" in signature_info:
+            logger.error(
+                "The 'signed_data' field in the signature object is deprecated and no longer supported. "
+                "Policies must be re-signed so that the signature covers all top-level fields except 'signature'."
+            )
+            return False
+
         # Decode the signature
         signature_b64 = signature_info["value"]
         signature = base64.b64decode(signature_b64)
         logger.debug(f"Decoded signature length: {len(signature)} bytes")
 
-        # Determine what data is covered by the signature
-        signed_data_spec = signature_info.get("signed_data")
-
-        if signed_data_spec is not None:
-            # signed_data specified: sign only those fields
-            if isinstance(signed_data_spec, str):
-                signed_data_spec = [signed_data_spec]
-
-            if not isinstance(signed_data_spec, list) or not signed_data_spec:
-                logger.error(
-                    "signed_data must be a non-empty string or list of strings"
-                )
-                return False
-
-            logger.debug(f"Signature covers specified fields: {signed_data_spec}")
-            for field in signed_data_spec:
-                if field not in policy_data:
-                    logger.error(
-                        f"signed_data field '{field}' not found in policy data"
-                    )
-                    return False
-
-            data_to_verify = {f: policy_data[f] for f in signed_data_spec}
-            signed_json = canonicalize_policy(data_to_verify)
-        else:
-            # Default: signature covers all top-level fields except "signature"
-            logger.debug(
-                "No signed_data specified, signature covers all fields except 'signature'"
-            )
-            signed_json = canonicalize_policy(policy_data)
+        signed_json = canonicalize_policy(policy_data)
         logger.debug(
             f"Prepared data for verification, length: {len(signed_json)} bytes"
         )
