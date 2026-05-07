@@ -95,6 +95,20 @@ def store_policy():
         )
 
     is_signed = "signature" in policy
+    if is_signed and "signed_data" in policy.get("signature", {}):
+        logger.error(
+            f"Policy {policy_type}:{key_id} uses deprecated 'signed_data' field"
+        )
+        return (
+            jsonify(
+                {
+                    "error": "The 'signed_data' field in the signature object is deprecated and no longer supported. "
+                    "Please re-sign the policy so that the signature covers all top-level fields."
+                }
+            ),
+            400,
+        )
+
     warning_message = None
     if not is_signed:
         logger.warning(f"Policy {policy_type}:{key_id} is not signed")
@@ -111,18 +125,12 @@ def store_policy():
             )
     else:
         logger.info(f"Policy {policy_type}:{key_id} is signed")
-        if not current_app.config.get("TAS_ENFORCE_SIGNED_POLICIES", True):
-            logger.warning(
-                "Signed policy not verified - policy signature check is disabled"
-            )
-            warning_message = "WARNING: Signed policy not verified - policy signature check is disabled"
-        else:
-            if not verify_policy_signature(
-                policy, current_app.config.get("TAS_TRUSTED_KEYS", [])
-            ):
-                logger.error("Policy signature verification failed")
-                return jsonify({"error": "Policy signature verification failed"}), 400
-            logger.info("Policy signature verification successful")
+        if not verify_policy_signature(
+            policy, current_app.config.get("TAS_TRUSTED_KEYS", [])
+        ):
+            logger.error("Policy signature verification failed")
+            return jsonify({"error": "Policy signature verification failed"}), 400
+        logger.info("Policy signature verification successful")
 
     try:
         redis_client = _get_redis()
