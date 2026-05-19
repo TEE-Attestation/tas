@@ -36,6 +36,10 @@ SERVER_PORT: 5000
 TAS_POLICY_TRUST: "./certs/policy"
 TAS_ENFORCE_SIGNED_POLICIES: true
 
+# Activate experimental features:
+# - Incrementable policies using add and remove with the /experimental endpoint
+# TAS_EXPERIMENTAL_FEATURES: false
+
 # Optional nested settings (available under app.config['TAS'])
 TAS:
   limits:
