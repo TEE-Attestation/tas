@@ -1,6 +1,0 @@
-# Add any pykmip certificates to this directory
-#
-# Ignore everything in this directory
-*
-# Except this file
-!.gitignore
