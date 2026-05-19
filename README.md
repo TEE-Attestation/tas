@@ -83,7 +83,7 @@ With TAS running you can use the [TAS agent](https://github.com/TEE-Attestation/
 - **Python** (>= 3.8)
 - **Redis**
 
-*If you want to use the KMIP KBM plugin, ensure PyKMIP is installed. Note that PyKMIP does not work on Python 3.12 or later because it relies on ssl.wrap_socket(), which was removed in Python 3.12, so your venv will need a Python version between 3.8 and 3.11.
+**Note:** If you want to use the KMIP KBM plugin, ensure PyKMIP is installed. Note that PyKMIP does not work on Python 3.12 or later because it relies on ssl.wrap_socket(), which was removed in Python 3.12, so your venv will need a Python version between 3.8 and 3.11.
 
 ### Verify Prerequisites
 
@@ -151,9 +151,9 @@ export TAS_KBM_CONFIG_FILE="config/mock_secrets.yaml"
 export TAS_API_KEY="$(openssl rand -hex 32)"  # Generate secure client API key
 export TAS_MANAGEMENT_API_KEY="$(openssl rand -hex 32)"  # Generate secure management API key
 export TAS_KBM_PLUGIN="tas_kbm_kmip_json"
-export TAS_KBM_CONFIG_FILE="./config/kmip/kmip.conf"
+export TAS_KBM_CONFIG_FILE="./config/kmipjson/kmip.conf"
 
-# Configure KMIP credentials in config/kmip/kmip.conf
+# Configure KMIP credentials in config/kmipjson/kmip.conf
 # See docs/CONFIG.md for detailed configuration options
 ```
 
@@ -175,7 +175,7 @@ Press CTRL+C to quit
 Use the flask run command, e.g.:
 
 ```bash
-(venv) ~/tas$ flask run -h X.X.X.X -p 5000 ---cert=path/to/cert.pem --key=config/tas_server.key
+(venv) ~/tas$ flask run -h X.X.X.X -p 5000 --cert=path/to/cert.pem --key=config/tas_server.key
 TAS-KBM: Successfully connected to the KMIP server.
 * Debug mode: off
 WARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.
@@ -283,7 +283,7 @@ TAS uses a flexible configuration system supporting environment variables and YA
 # Minimum required configuration
 export TAS_API_KEY="your-secure-64-character-minimum-api-key-here"
 export TAS_MANAGEMENT_API_KEY="your-secure-64-character-minimum-management-key"
-export TAS_KBM_PLUGIN="tas_kbm_mock"  # or "tas_kbm_kmip"
+export TAS_KBM_PLUGIN="tas_kbm_mock"  # or "tas_kbm_kmip_json"
 ```
 
 ### Complete Configuration Example
@@ -292,8 +292,8 @@ export TAS_KBM_PLUGIN="tas_kbm_mock"  # or "tas_kbm_kmip"
 # Core settings
 export TAS_API_KEY="your-production-api-key-must-be-64-characters-minimum"
 export TAS_MANAGEMENT_API_KEY="your-management-api-key-must-be-64-characters-min"
-export TAS_KBM_PLUGIN="tas_kbm_kmip"
-export TAS_KBM_CONFIG_FILE="./config/pykmip/pykmip.conf"
+export TAS_KBM_PLUGIN="tas_kbm_kmip_json"
+export TAS_KBM_CONFIG_FILE="./config/kmipjson/kmip.conf"
 
 # Optional settings
 export TAS_REDIS_HOST="localhost"
@@ -429,7 +429,7 @@ must also be present in the configured key broker module.
 
 For example, to allow a TDX confidential guest to attest and request a key
 named ``my-key``, the ``redis`` policy key record would be identified by
-``policy:TDX:my-key-1``. The value to be stored in against the policy key
+``policy:TDX:my-key-1``. The value to be stored against the policy key
 is the JSON document that represents the (signed) attestation policy. A
 complete example would be
 
@@ -470,17 +470,18 @@ def kbm_close_client_connection(client) -> None:
 #### KMIP JSON Plugin
 ```bash
 export TAS_KBM_PLUGIN="tas_kbm_kmip_json"
-export TAS_KBM_CONFIG_FILE="./config/kmip/kmip.conf"
+export TAS_KBM_CONFIG_FILE="./config/kmipjson/kmip.conf"
 ```
 The KMIP configuration file should contain KMIP server details and credentials.
 
-#### KMIP Binary Plugin
+#### Thales CTM REST Plugin
 ```bash
-export TAS_KBM_PLUGIN="tas_kbm_kmip"
-export TAS_KBM_CONFIG_FILE="./config/pykmip/pykmip.conf"
+export TAS_KBM_PLUGIN="tas_kbm_thales_ctm"
+export TAS_KBM_CONFIG_FILE="./config/thales_ctm/thales_ctm.yaml"
 ```
 
-The PyKMIP configuration file should contain KMIP server details and credentials.
+The Thales CTM REST Plugin configuration file should contain CTM server details and credentials,
+see [documentation](certs/thales_ctm/README.md) on how to configure it. 
 
 #### Mock Plugin
 ```bash
@@ -549,9 +550,6 @@ python -m pytest tests/ --cov=tas --cov-report=html
 ```
 
 ## Upcoming Changes
-
- - Add RSA key to TEE report data
- - Policy registering tool
  - Policy identifier changes
  - **Removal of deprecated `/policy/v0/*` endpoints** (31 March 2026) — migrate to `/management/policy/v0/*`
 
@@ -581,20 +579,17 @@ export TAS_API_KEY="$(openssl rand -hex 32)"
 export TAS_MANAGEMENT_API_KEY="$(openssl rand -hex 32)"
 ```
 
-### KMIP Connection Issues
+### KBM Connection Issues
 ```
 Error: Failed to initialize KBM client
 ```
 **Solutions**:
-- Check PyKMIP configuration file exists and is valid
-- Verify KMIP server connectivity
+- Check that the KBM configuration file exists and is valid
+- Verify KMS server connectivity
 - Use mock plugin for testing: `export TAS_KBM_PLUGIN=tas_kbm_mock`
 
 ### Python Version Compatibility
-```
-Error: ssl.wrap_socket() removed in Python 3.12
-```
-**Solution**: Use Python 3.7-3.11. PyKMIP doesn't support Python 3.12+
+Tested on Python 3.10 - 3.14. 
 
 ### Debug Mode
 
