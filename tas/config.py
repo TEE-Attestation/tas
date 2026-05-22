@@ -10,14 +10,12 @@
 #
 
 # config.py
-import os
 
 from tas.tas_logging import get_logger
 
 logger = get_logger(__name__)
 
 
-# TODO Set sensible defaults and document all config options
 class BaseConfig:
     # Flask built-ins
     DEBUG = False
@@ -32,26 +30,20 @@ class BaseConfig:
     MAX_CONTENT_LENGTH = 2 * 1024 * 1024  # 2 MB
 
     # TAS specifics
-    # TODO remove getenv and use hardcoded defaults as we will overide with env vars in later stages
     TAS_VERSION = "0.1.0"
-    TAS_API_KEY = os.getenv("TAS_API_KEY", "")
-    TAS_API_KEY_MIN_LENGTH = int(os.getenv("TAS_API_KEY_MIN_LENGTH", "64"))
-    TAS_MANAGEMENT_API_KEY = os.getenv("TAS_MANAGEMENT_API_KEY", "")
-    TAS_MANAGEMENT_API_KEY_MIN_LENGTH = int(
-        os.getenv("TAS_MANAGEMENT_API_KEY_MIN_LENGTH", "64")
-    )
-    TAS_NONCE_EXPIRATION_SECONDS = int(os.getenv("TAS_NONCE_EXPIRATION_SECONDS", "120"))
-    TAS_REDIS_HOST = os.getenv("TAS_REDIS_HOST", "localhost")
-    TAS_REDIS_PORT = int(os.getenv("TAS_REDIS_PORT", "6379"))
-    TAS_REDIS_PASSWORD = os.getenv("TAS_REDIS_PASSWORD", "")
+    TAS_API_KEY = ""
+    TAS_API_KEY_MIN_LENGTH = 64
+    TAS_MANAGEMENT_API_KEY = ""
+    TAS_MANAGEMENT_API_KEY_MIN_LENGTH = 64
+    TAS_NONCE_EXPIRATION_SECONDS = 120
+    TAS_REDIS_HOST = "localhost"
+    TAS_REDIS_PORT = 6379
+    TAS_REDIS_PASSWORD = ""
     TAS_REDIS_PERSISTENCE = True
-    TAS_PLUGIN_PREFIX = os.getenv("TAS_PLUGIN_PREFIX", "tas_kbm")
-    # TODO fix this  to take the config file relative to app.py file
-    TAS_KBM_CONFIG_FILE = os.getenv(
-        "TAS_KBM_CONFIG_FILE", "./config/kbm_mock_config.yaml"
-    )
-    TAS_KBM_PLUGIN = "tas_kbm_mock"  # default KBM plugin module name
-    TAS_EXTRA_PLUGIN_DIR = None  # optional extra directory to search for plugins
+    TAS_PLUGIN_PREFIX = "tas_kbm"
+    TAS_KBM_CONFIG_FILE = "./config/kbm_mock_config.yaml"
+    TAS_KBM_PLUGIN = "tas_kbm_mock"
+    TAS_EXTRA_PLUGIN_DIR = None
 
     def __init__(self):
         logger.debug("Initializing BaseConfig with default TAS settings")
