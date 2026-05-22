@@ -8,7 +8,7 @@
 #
 
 import pytest
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 from werkzeug.exceptions import BadRequest, Forbidden, HTTPException, Unauthorized
 
 from tas.error_handlers import register_error_handlers
@@ -135,3 +135,24 @@ class TestNormalRoutes:
         resp = client.get("/ok")
         assert resp.status_code == 200
         assert resp.get_json() == {"status": "ok"}
+
+
+class TestRequestSizeLimits:
+    """Verify that MAX_CONTENT_LENGTH triggers a 413 response."""
+
+    def test_request_entity_too_large_returns_413(self, app, client):
+        app.config["MAX_CONTENT_LENGTH"] = 1024  # 1 KB limit for test
+
+        @app.route("/upload", methods=["POST"])
+        def upload():
+            _ = request.get_data()  # triggers MAX_CONTENT_LENGTH check
+            return jsonify({"status": "ok"}), 200
+
+        # Send a payload larger than the limit
+        oversized = b"x" * 2048
+        resp = client.post(
+            "/upload", data=oversized, content_type="application/octet-stream"
+        )
+        assert resp.status_code == 413
+        data = resp.get_json()
+        assert "error" in data
