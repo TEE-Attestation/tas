@@ -25,6 +25,25 @@ from .tas_logging import get_logger
 logger = get_logger(__name__)
 
 
+def is_policy_signed(policy_data):
+    """Determine if a policy is signed.
+
+    A policy is considered signed only if it has a 'signature' field
+    containing a 'value' sub-field. A policy missing 'signature' entirely,
+    or having 'signature' without 'value', is considered unsigned.
+
+    Args:
+        policy_data: The policy data dict.
+
+    Returns:
+        bool: True if the policy has a signature with a value, False otherwise.
+    """
+    signature = policy_data.get("signature")
+    if not isinstance(signature, dict):
+        return False
+    return "value" in signature
+
+
 def verify_policy_signature(policy_data, public_keys):
     """Verify the signature in a policy against a list of public keys.
 

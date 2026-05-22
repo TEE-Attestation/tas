@@ -17,6 +17,7 @@ from flask import Blueprint, current_app, jsonify, request
 from .auth import authenticate_management_request
 from .policy_helper import (
     POLICY_KEY_COMPONENT_RE,
+    is_policy_signed,
     validate_policy_key,
     verify_policy_signature,
 )
@@ -94,7 +95,7 @@ def store_policy():
             400,
         )
 
-    is_signed = "signature" in policy
+    is_signed = is_policy_signed(policy)
     if is_signed and "signed_data" in policy.get("signature", {}):
         logger.error(
             f"Policy {policy_type}:{key_id} uses deprecated 'signed_data' field"
@@ -184,7 +185,7 @@ def get_policy(policy_key):
         logger.info(f"Successfully retrieved policy '{policy_key}'")
 
         response_data = {"policy_key": policy_key, "policy": policy}
-        if "signature" not in policy:
+        if not is_policy_signed(policy):
             logger.warning(f"Retrieved policy '{policy_key}' is not signed")
             response_data[
                 "warning"
@@ -227,7 +228,7 @@ def list_policies():
                         "name": metadata.get("name", "Unknown"),
                         "version": metadata.get("version", "Unknown"),
                         "description": metadata.get("description", "No description"),
-                        "signed": "signature" in policy,
+                        "signed": is_policy_signed(policy),
                     }
                     policies.append(policy_info)
                     logger.debug(f"Added policy to list: {key}")
