@@ -29,6 +29,7 @@ class BaseConfig:
     TRAP_HTTP_EXCEPTIONS = False
     TRAP_BAD_REQUEST_ERRORS = None
     SESSION_COOKIE_NAME = "tas_session"
+    MAX_CONTENT_LENGTH = 2 * 1024 * 1024  # 2 MB
 
     # TAS specifics
     # TODO remove getenv and use hardcoded defaults as we will overide with env vars in later stages

@@ -109,6 +109,7 @@ export TAS_OVERRIDE__logging__file="/var/log/tas.log"
   - JSON_SORT_KEYS (bool)
   - JSONIFY_PRETTYPRINT_REGULAR (bool)
   - PROPAGATE_EXCEPTIONS (bool, optional)
+  - MAX_CONTENT_LENGTH (int) — Maximum request body size in bytes. Default `2097152` (2 MB). Increase for multi-GPU attestation (e.g. `4194304` for 16+ GPUs). Set via `FLASK_MAX_CONTENT_LENGTH` env var or `MAX_CONTENT_LENGTH` in YAML config.
 
 ### TAS-specific keys
 

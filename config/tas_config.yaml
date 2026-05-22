@@ -8,6 +8,7 @@
 #TRAP_HTTP_EXCEPTIONS: false
 #TRAP_BAD_REQUEST_ERRORS: null
 #SESSION_COOKIE_NAME: "tas_session"
+#MAX_CONTENT_LENGTH: 2097152  # 2 MB; increase for multi-GPU attestation servers
 
 # Server binding (used by app.run)
 SERVER_BIND_HOST: "0.0.0.0"
