@@ -22,7 +22,7 @@ from cryptography import x509
 from cryptography.hazmat.primitives import serialization
 from flask import current_app
 
-from tas.policy_helper import verify_policy_signature
+from tas.policy_helper import is_policy_signed, verify_policy_signature
 from tas.tas_logging import get_logger, log_function_entry, log_function_exit
 
 # Setup logging for verification output
@@ -431,7 +431,7 @@ def get_policy_from_redis(redis_client: redis.StrictRedis, policy_key: str):
         logger.error(f"Failed to parse policy JSON: {e}")
         raise ValueError("Invalid policy format")
 
-    if not policy_json.get("signature"):
+    if not is_policy_signed(policy_json):
         # Policy is not signed
         if current_app.config.get("TAS_ENFORCE_SIGNED_POLICIES", True):
             logger.error(f"Policy '{policy_key}' is not signed and signing is required")
