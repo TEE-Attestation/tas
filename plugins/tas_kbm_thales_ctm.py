@@ -555,7 +555,13 @@ def kbm_open_client_connection(config_file: str = None):
 
     # Extract connection parameters
     host = cfg.get("host")
-    verify_ssl = cfg.get("verify_ssl", False)
+    verify_ssl = cfg.get("verify_ssl", True)
+    if not verify_ssl:
+        logger.warning(
+            "TLS certificate verification is DISABLED for Thales CTM connections "
+            "(verify_ssl=false in config). This is insecure and should only be used "
+            "for development/testing."
+        )
     ca_cert = cfg.get("ca_certfile")
     certificate_login = cfg.get("certificate_login", False)
 
