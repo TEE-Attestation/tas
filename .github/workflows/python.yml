@@ -244,6 +244,7 @@ jobs:
                 "version": "1.0",
                 "description": "Integration test policy",
                 "policy_type": "SEV",
+                "policy_id": "ci-persist-test",
                 "key_id": "ci-persist-test"
               },
               "validation_rules": {"host_data": {"exact_match": "test"}}
@@ -255,7 +256,7 @@ jobs:
           echo "PASS: Policy stored (HTTP $HTTP_CODE)"
 
           # Confirm policy exists
-          redis-cli -p ${{ matrix.redis_port }} GET "policy:SEV:ci-persist-test" | grep -q "CI Persistence Test"
+          redis-cli -p ${{ matrix.redis_port }} GET "policy:ci-persist-test" | grep -q "CI Persistence Test"
           echo "PASS: Policy found in Redis"
 
           # Wait for AOF fsync (appendfsync everysec)
@@ -275,7 +276,7 @@ jobs:
           for i in $(seq 1 10); do redis-cli -p ${{ matrix.redis_port }} ping 2>/dev/null | grep -q PONG && break; sleep 0.5; done
 
           # Verify policy survived
-          RESULT=$(redis-cli -p ${{ matrix.redis_port }} GET "policy:SEV:ci-persist-test")
+          RESULT=$(redis-cli -p ${{ matrix.redis_port }} GET "policy:ci-persist-test")
           if echo "$RESULT" | grep -q "CI Persistence Test"; then
             echo "PASS: Policy survived Redis restart via AOF"
           else
@@ -465,6 +466,7 @@ jobs:
                 "version": "1.0",
                 "description": "test",
                 "policy_type": "SEV",
+                "policy_id": "ci-auth-test",
                 "key_id": "ci-auth-test"
               },
               "validation_rules": {}
@@ -477,7 +479,7 @@ jobs:
 
           # Retrieve policy
           HTTP_CODE=$(curl -s -o /tmp/auth_get.json -w "%{http_code}" \
-            "http://localhost:${{ matrix.port }}/management/policy/v0/get/policy:SEV:ci-auth-test" \
+            "http://localhost:${{ matrix.port }}/management/policy/v0/get/ci-auth-test" \
             -H "X-MANAGEMENT-API-KEY: $TAS_MANAGEMENT_API_KEY")
           if [ "$HTTP_CODE" -ne 200 ]; then
             echo "FAIL: Get returned HTTP $HTTP_CODE"; exit 1

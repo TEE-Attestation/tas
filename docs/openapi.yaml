@@ -58,9 +58,9 @@ components:
         tee-evidence:
           type: string
           description: TEE attestation evidence (base64 encoded)
-        key-id:
+        policy-id:
           type: string
-          description: Identifier of the key to retrieve
+          description: Policy identifier for attestation
         wrapping-key:
           type: string
           description: Base64-encoded client public key for wrapping
@@ -68,7 +68,7 @@ components:
       - tee-type
       - nonce
       - tee-evidence
-      - key-id
+      - policy-id
       - wrapping-key
     SecretResponse:
       type: object
@@ -84,6 +84,9 @@ components:
         name:
           type: string
           description: Policy name
+        policy_id:
+          type: string
+          description: Unique identifier for the policy
         policy_type:
           type: string
           description: TEE type (e.g. SEV, TDX)
@@ -111,6 +114,7 @@ components:
       - name
       - version
       - policy_type
+      - policy_id
       - key_id
     PolicyValidationRules:
       type: object
@@ -279,230 +283,7 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
-  /policy/v0/store:
-    post:
-      tags:
-      - Policy Management (Deprecated)
-      summary: Store a security policy
-      description: 'Stores a security policy for later use in attestation validation Deprecated: will be removed after 31
-        March 2026. Use /management/policy/v0/* endpoints instead.'
-      security:
-      - ManagementApiKeyAuth: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/PolicyData'
-      responses:
-        '201':
-          description: Policy stored successfully
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  message:
-                    type: string
-                  warning:
-                    type: string
-                  deprecation_warning:
-                    type: string
-                    description: Deprecation notice for this endpoint
-          headers:
-            Deprecation: &id001
-              $ref: '#/components/headers/Deprecation'
-            Sunset: &id002
-              $ref: '#/components/headers/Sunset'
-            Link: &id003
-              $ref: '#/components/headers/Link'
-            Warning: &id004
-              $ref: '#/components/headers/Warning'
-        '400':
-          description: Bad request - Invalid policy data
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-          headers:
-            Deprecation: *id001
-            Sunset: *id002
-            Link: *id003
-            Warning: *id004
-        '401':
-          description: Unauthorized
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-          headers:
-            Deprecation: *id001
-            Sunset: *id002
-            Link: *id003
-            Warning: *id004
-      deprecated: true
-  /policy/v0/get/{policy_key}:
-    get:
-      tags:
-      - Policy Management (Deprecated)
-      summary: Get a security policy
-      description: 'Retrieves a stored security policy by key Deprecated: will be removed after 31 March 2026. Use /management/policy/v0/*
-        endpoints instead.'
-      security:
-      - ManagementApiKeyAuth: []
-      parameters:
-      - name: policy_key
-        in: path
-        required: true
-        schema:
-          type: string
-        description: Policy key to retrieve
-      responses:
-        '200':
-          description: Policy retrieved successfully
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  policy_key:
-                    type: string
-                  policy:
-                    $ref: '#/components/schemas/PolicyData'
-                  warning:
-                    type: string
-                  deprecation_warning:
-                    type: string
-                    description: Deprecation notice for this endpoint
-          headers:
-            Deprecation: *id001
-            Sunset: *id002
-            Link: *id003
-            Warning: *id004
-        '401':
-          description: Unauthorized
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-          headers:
-            Deprecation: *id001
-            Sunset: *id002
-            Link: *id003
-            Warning: *id004
-        '404':
-          description: Policy not found
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-          headers:
-            Deprecation: *id001
-            Sunset: *id002
-            Link: *id003
-            Warning: *id004
-      deprecated: true
-  /policy/v0/list:
-    get:
-      tags:
-      - Policy Management (Deprecated)
-      summary: List all policies
-      description: 'Lists all stored security policies Deprecated: will be removed after 31 March 2026. Use /management/policy/v0/*
-        endpoints instead.'
-      security:
-      - ManagementApiKeyAuth: []
-      responses:
-        '200':
-          description: Policies listed successfully
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  policies:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        policy_key:
-                          type: string
-                        name:
-                          type: string
-                        version:
-                          type: string
-                        description:
-                          type: string
-                        signed:
-                          type: boolean
-                  count:
-                    type: integer
-                  deprecation_warning:
-                    type: string
-                    description: Deprecation notice for this endpoint
-          headers:
-            Deprecation: *id001
-            Sunset: *id002
-            Link: *id003
-            Warning: *id004
-        '401':
-          description: Unauthorized
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-          headers:
-            Deprecation: *id001
-            Sunset: *id002
-            Link: *id003
-            Warning: *id004
-      deprecated: true
-  /policy/v0/delete/{policy_name}:
-    delete:
-      tags:
-      - Policy Management (Deprecated)
-      summary: Delete a security policy
-      description: 'Deletes a stored security policy Deprecated: will be removed after 31 March 2026. Use /management/policy/v0/*
-        endpoints instead.'
-      security:
-      - ManagementApiKeyAuth: []
-      parameters:
-      - name: policy_name
-        in: path
-        required: true
-        schema:
-          type: string
-        description: Policy name to delete
-      responses:
-        '200':
-          description: Policy deleted successfully
-          headers:
-            Deprecation: *id001
-            Sunset: *id002
-            Link: *id003
-            Warning: *id004
-        '401':
-          description: Unauthorized
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-          headers:
-            Deprecation: *id001
-            Sunset: *id002
-            Link: *id003
-            Warning: *id004
-        '404':
-          description: Policy not found
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-          headers:
-            Deprecation: *id001
-            Sunset: *id002
-            Link: *id003
-            Warning: *id004
-      deprecated: true
+
   /version:
     get:
       tags:
@@ -562,21 +343,21 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
-  /management/policy/v0/get/{policy_key}:
+  /management/policy/v0/get/{policy_id}:
     get:
       tags:
       - Policy Management
       summary: Get a security policy
-      description: Retrieves a stored security policy by key
+      description: Retrieves a stored security policy by its policy_id
       security:
       - ManagementApiKeyAuth: []
       parameters:
-      - name: policy_key
+      - name: policy_id
         in: path
         required: true
         schema:
           type: string
-        description: Policy key to retrieve
+        description: Policy identifier
       responses:
         '200':
           description: Policy retrieved successfully
@@ -587,6 +368,7 @@ paths:
                 properties:
                   policy_key:
                     type: string
+                    description: Redis storage key
                   policy:
                     $ref: '#/components/schemas/PolicyData'
                   warning:
@@ -624,9 +406,13 @@ paths:
                     items:
                       type: object
                       properties:
-                        policy_key:
+                        policy_id:
                           type: string
                         name:
+                          type: string
+                        policy_type:
+                          type: string
+                        key_id:
                           type: string
                         version:
                           type: string
@@ -642,7 +428,7 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
-  /management/policy/v0/delete/{policy_key}:
+  /management/policy/v0/delete/{policy_id}:
     delete:
       tags:
       - Policy Management
@@ -651,12 +437,12 @@ paths:
       security:
       - ManagementApiKeyAuth: []
       parameters:
-      - name: policy_key
+      - name: policy_id
         in: path
         required: true
         schema:
           type: string
-        description: Policy key to delete
+        description: Policy identifier to delete
       responses:
         '200':
           description: Policy deleted successfully

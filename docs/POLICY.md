@@ -22,10 +22,6 @@ TAS policies define the security requirements that TEE attestation evidence must
 
 Policies are stored in Redis and referenced during attestation validation to determine if TEE evidence meets the required security standards.
 
-> **Deprecation Notice**: The `/policy/v0/*` endpoints are deprecated and will be removed after **31 March 2026**.
-> All policy management operations should use the new `/management/policy/v0/*` endpoints with the `X-MANAGEMENT-API-KEY` header.
-> See the [Registering Policies](#registering-policies) section for updated examples.
-
 ## Policy Structure
 
 ### Example Policy Format
@@ -37,6 +33,7 @@ Policies are stored in Redis and referenced during attestation validation to det
     "version": "1.0",
     "description": "Policy description",
     "policy_type": "SEV",
+    "policy_id": "my-sev-policy-001",
     "key_id": "my-secret-id",
     "created_date": "2024-09-09",
     "last_updated": "2024-09-09"
@@ -80,7 +77,7 @@ Policies are stored in Redis and referenced during attestation validation to det
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `metadata` | object | Yes | Policy metadata (must include `policy_type` and `key_id`) |
+| `metadata` | object | Yes | Policy metadata (must include `policy_type`, `policy_id`, and `key_id`) |
 | `validation_rules` | object | Yes | Attestation validation criteria |
 | `signature` | object | No | Digital signature for integrity |
 
@@ -90,6 +87,7 @@ Policies are stored in Redis and referenced during attestation validation to det
 |-------|------|----------|-------------|
 | `name` | string | Yes | Human-readable policy name |
 | `policy_type` | string | Yes | TEE type (e.g. `SEV`, `TDX`) |
+| `policy_id` | string | Yes | Unique identifier for this policy (alphanumeric, hyphens, underscores, dots only) |
 | `key_id` | string | Yes | The secret ID this policy is used to release (must match the secret registered in KMS or HSM) |
 | `version` | string | No | Policy version |
 | `description` | string | No | Policy description |
@@ -223,7 +221,7 @@ python3 demo_signer.py --cert your-policy.json
 ```
 ## Registering Policies
 
-To register a policy with TAS, POST the policy JSON directly to the store endpoint. The `policy_type` and `key_id` are read from the policy's `metadata` section.
+To register a policy with TAS, POST the policy JSON directly to the store endpoint. The `policy_id`, `policy_type`, and `key_id` are read from the policy's `metadata` section.
 
 Policy registration uses the **management API**, which requires the `X-MANAGEMENT-API-KEY` header (separate from the client `X-API-KEY`).
 
@@ -238,6 +236,7 @@ The request body is the complete signed policy from Step 2 above:
     "version": "1.0",
     "description": "Production policy for SEV attestation",
     "policy_type": "SEV",
+    "policy_id": "my-sev-policy-001",
     "key_id": "my-secret-id",
     "created_date": "2024-09-09"
   },
@@ -263,13 +262,14 @@ The request body is the complete signed policy from Step 2 above:
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `metadata.policy_type` | string | Yes | TEE type: either "SEV" or "TDX" |
+| `metadata.policy_id` | string | Yes | Unique identifier for this policy (alphanumeric, hyphens, underscores, dots only) |
 | `metadata.key_id` | string | Yes | **The secret ID that this policy will be used to release** (must match the secret registered in KMS or HSM) |
 
-**How it works:** When a client requests a secret, TAS uses the policy associated with that secret's `key_id` to validate the attestation evidence before releasing the secret. The `key_id` must exist in the key manager that TAS KBM is connected to.
+**How it works:** When a client requests a secret, TAS uses the `policy_id` to look up the policy and validates the attestation evidence. On success, the `key_id` from the policy metadata identifies which secret to release from the key manager. The `key_id` must exist in the key manager that TAS KBM is connected to.
 
-**Policy Storage Format:** The policy will be stored in Redis using the key format: `policy:{policy_type}:{key_id}`
+**Policy Storage Format:** The policy will be stored in Redis using the key format: `policy:{policy_id}`
 
-Example: `policy:SEV:my-secret-id`
+Example: `policy:my-sev-policy-001`
 
 ### Using curl
 
@@ -285,6 +285,7 @@ curl -X POST http://localhost:5001/management/policy/v0/store \
     "metadata": {
       "name": "My Policy",
       "policy_type": "SEV",
+      "policy_id": "my-sev-policy-001",
       "key_id": "my-secret-id"
     },
     "validation_rules": {...},
@@ -292,7 +293,7 @@ curl -X POST http://localhost:5001/management/policy/v0/store \
   }'
 
 # Expected response:
-# {"message": "Policy 'policy:policy_type:key_id' stored successfully"}
+# {"message": "Policy 'policy:my-sev-policy-001' stored successfully"}
 ```
 
 ## Validation Rule Types

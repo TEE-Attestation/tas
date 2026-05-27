@@ -22,7 +22,6 @@ from flask import Flask, jsonify, request
 
 from tas.auth import authenticate_request, init_client_auth, init_management_auth
 from tas.config_loader import load_configuration
-from tas.deprecated_routes import deprecated_policy_bp
 from tas.error_handlers import register_error_handlers
 from tas.management_routes import management_bp
 from tas.tas_logging import configure_external_logging, setup_logging
@@ -196,7 +195,6 @@ app.extensions["redis_config_rewrite_ok"] = _redis_config_rewrite_ok
 
 # Register blueprints
 app.register_blueprint(management_bp)
-app.register_blueprint(deprecated_policy_bp)
 
 # log discovered plugins for debugging
 logger.debug("Discovered plugins:")
@@ -324,15 +322,15 @@ def get_secret():
         logger.error("Secret request missing TEE evidence")
         return jsonify({"error": "TEE evidence is required"}), 400
 
-    # Validate the "key-id" field
-    key_id = data.get("key-id")
-    if not key_id:
-        logger.error("Secret request missing key ID")
-        return jsonify({"error": "Key ID is required"}), 400
+    # Validate the "policy-id" field
+    policy_id = data.get("policy-id")
+    if not policy_id:
+        logger.error("Secret request missing policy ID")
+        return jsonify({"error": "Policy ID is required"}), 400
 
     # Log the fields for debugging
     logger.debug(f"Received TEE evidence: {tee_evidence}")
-    logger.debug(f"Received Key ID: {key_id}")
+    logger.debug(f"Received Policy ID: {policy_id}")
 
     # Report data binding is required for this route,
     # create a new route for non-binding use cases if needed in the future
@@ -371,12 +369,12 @@ def get_secret():
 
     # Call vm_verify to validate the parameters
     logger.info(f"Starting TEE verification for type: {tee_type}")
-    is_verified, verify_error = vm_verify(
+    is_verified, key_id, verify_error = vm_verify(
         redis_client,
         nonce,
         tee_type,
         tee_evidence,
-        key_id,
+        policy_id,
         wrapping_key=wrapping_key,
         report_data_binding=report_data_binding,
         gpu_evidence=gpu_evidence,  # NEW (for Phase 2)
