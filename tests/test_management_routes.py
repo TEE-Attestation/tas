@@ -14,7 +14,6 @@ import pytest
 from flask import Flask
 
 from tas.auth import init_client_auth, init_management_auth
-from tas.deprecated_routes import deprecated_policy_bp
 from tas.management_routes import management_bp
 
 CLIENT_API_KEY = "a" * 64
@@ -26,6 +25,7 @@ VALID_POLICY_PAYLOAD = {
         "version": "1.0",
         "description": "A test policy",
         "policy_type": "SEV",
+        "policy_id": "test-sev-policy-001",
         "key_id": "test-key-1",
     },
     "validation_rules": {
@@ -68,7 +68,7 @@ class FakeRedis:
 
 @pytest.fixture()
 def app():
-    """Create a test Flask app with both blueprints registered."""
+    """Create a test Flask app with management blueprint registered."""
     test_app = Flask(__name__)
     test_app.config["TESTING"] = True
     test_app.config["TAS_API_KEY"] = CLIENT_API_KEY
@@ -83,7 +83,6 @@ def app():
     init_management_auth(test_app)
 
     test_app.register_blueprint(management_bp)
-    test_app.register_blueprint(deprecated_policy_bp)
 
     return test_app
 
@@ -148,9 +147,9 @@ class TestManagementStorePolicy:
         )
         assert resp.status_code == 400
 
-    def test_store_policy_invalid_policy_type(self, client, mgmt_headers):
+    def test_store_policy_missing_policy_id(self, client, mgmt_headers):
         payload = json.loads(json.dumps(VALID_POLICY_PAYLOAD))
-        payload["metadata"]["policy_type"] = "bad chars!@#"
+        del payload["metadata"]["policy_id"]
         resp = client.post(
             "/management/policy/v0/store",
             headers=mgmt_headers,
@@ -158,32 +157,65 @@ class TestManagementStorePolicy:
         )
         assert resp.status_code == 400
 
+    def test_store_policy_missing_key_id(self, client, mgmt_headers):
+        payload = json.loads(json.dumps(VALID_POLICY_PAYLOAD))
+        del payload["metadata"]["key_id"]
+        resp = client.post(
+            "/management/policy/v0/store",
+            headers=mgmt_headers,
+            data=json.dumps(payload),
+        )
+        assert resp.status_code == 400
+
+    def test_store_policy_invalid_policy_id(self, client, mgmt_headers):
+        payload = json.loads(json.dumps(VALID_POLICY_PAYLOAD))
+        payload["metadata"]["policy_id"] = "bad chars!@#"
+        resp = client.post(
+            "/management/policy/v0/store",
+            headers=mgmt_headers,
+            data=json.dumps(payload),
+        )
+        assert resp.status_code == 400
+
+    def test_store_policy_duplicate_rejected(self, client, mgmt_headers, app):
+        """Storing a policy with the same policy_id twice should return 409."""
+        app.extensions["redis"].set(
+            "policy:test-sev-policy-001",
+            json.dumps(VALID_POLICY_PAYLOAD),
+        )
+        resp = client.post(
+            "/management/policy/v0/store",
+            headers=mgmt_headers,
+            data=json.dumps(VALID_POLICY_PAYLOAD),
+        )
+        assert resp.status_code == 409
+
 
 class TestManagementGetPolicy:
     def test_get_policy_success(self, client, mgmt_headers, app):
         # Store a policy first
         app.extensions["redis"].set(
-            "policy:SEV:test-key-1",
+            "policy:test-sev-policy-001",
             json.dumps(VALID_POLICY_PAYLOAD),
         )
         resp = client.get(
-            "/management/policy/v0/get/policy:SEV:test-key-1",
+            "/management/policy/v0/get/test-sev-policy-001",
             headers=mgmt_headers,
         )
         assert resp.status_code == 200
         data = resp.get_json()
-        assert data["policy_key"] == "policy:SEV:test-key-1"
+        assert data["policy_key"] == "policy:test-sev-policy-001"
 
     def test_get_policy_not_found(self, client, mgmt_headers):
         resp = client.get(
-            "/management/policy/v0/get/policy:SEV:nonexistent",
+            "/management/policy/v0/get/nonexistent-policy",
             headers=mgmt_headers,
         )
         assert resp.status_code == 404
 
     def test_get_policy_invalid_key_format(self, client, mgmt_headers):
         resp = client.get(
-            "/management/policy/v0/get/bad-key-format",
+            "/management/policy/v0/get/bad key!@#",
             headers=mgmt_headers,
         )
         assert resp.status_code == 400
@@ -199,23 +231,25 @@ class TestManagementListPolicies:
 
     def test_list_policies_with_data(self, client, mgmt_headers, app):
         app.extensions["redis"].set(
-            "policy:SEV:key1",
+            "policy:test-sev-policy-001",
             json.dumps(VALID_POLICY_PAYLOAD),
         )
         resp = client.get("/management/policy/v0/list", headers=mgmt_headers)
         assert resp.status_code == 200
         data = resp.get_json()
         assert data["count"] == 1
+        assert data["policies"][0]["policy_id"] == "test-sev-policy-001"
+        assert data["policies"][0]["key_id"] == "test-key-1"
 
 
 class TestManagementDeletePolicy:
     def test_delete_policy_success(self, client, mgmt_headers, app):
         app.extensions["redis"].set(
-            "policy:SEV:to-delete",
+            "policy:to-delete",
             json.dumps(VALID_POLICY_PAYLOAD),
         )
         resp = client.delete(
-            "/management/policy/v0/delete/policy:SEV:to-delete",
+            "/management/policy/v0/delete/to-delete",
             headers=mgmt_headers,
         )
         assert resp.status_code == 200
@@ -223,84 +257,68 @@ class TestManagementDeletePolicy:
 
     def test_delete_policy_not_found(self, client, mgmt_headers):
         resp = client.delete(
-            "/management/policy/v0/delete/policy:SEV:nonexistent",
+            "/management/policy/v0/delete/nonexistent-policy",
             headers=mgmt_headers,
         )
         assert resp.status_code == 404
 
 
-# -- Deprecated route tests --
+# -- Old policy format rejection tests --
 
 
-class TestDeprecatedRoutes:
-    """Verify old /policy/v0/* routes still work but emit deprecation headers."""
+class TestOldPolicyFormatRejected:
+    """Ensure the old policy:{policy_type}:{key_id} system is rejected."""
 
-    def test_deprecated_store_works(self, client, mgmt_headers):
+    def test_old_format_policy_id_with_colons_rejected_on_store(
+        self, client, mgmt_headers
+    ):
+        """A policy_id containing colons (old format) should be rejected."""
+        payload = json.loads(json.dumps(VALID_POLICY_PAYLOAD))
+        payload["metadata"]["policy_id"] = "SEV:test-key-1"
         resp = client.post(
-            "/policy/v0/store",
+            "/management/policy/v0/store",
             headers=mgmt_headers,
-            data=json.dumps(VALID_POLICY_PAYLOAD),
+            data=json.dumps(payload),
         )
-        assert resp.status_code == 201
+        assert resp.status_code == 400
+        assert "Invalid policy_id" in resp.get_json()["error"]
 
-    def test_deprecated_store_has_deprecation_header(self, client, mgmt_headers):
-        resp = client.post(
-            "/policy/v0/store",
-            headers=mgmt_headers,
-            data=json.dumps(VALID_POLICY_PAYLOAD),
-        )
-        assert resp.headers.get("Deprecation") == "true"
-        assert resp.headers.get("Sunset") is not None
-        assert "successor-version" in resp.headers.get("Link", "")
-
-    def test_deprecated_store_body_has_warning(self, client, mgmt_headers):
-        resp = client.post(
-            "/policy/v0/store",
-            headers=mgmt_headers,
-            data=json.dumps(VALID_POLICY_PAYLOAD),
-        )
-        data = resp.get_json()
-        assert "deprecation_warning" in data
-
-    def test_deprecated_list_has_deprecation_header(self, client, mgmt_headers):
-        resp = client.get("/policy/v0/list", headers=mgmt_headers)
-        assert resp.status_code == 200
-        assert resp.headers.get("Deprecation") == "true"
-
-    def test_deprecated_get_has_deprecation_header(self, client, mgmt_headers, app):
-        app.extensions["redis"].set(
-            "policy:SEV:dep-test",
-            json.dumps(VALID_POLICY_PAYLOAD),
-        )
+    def test_old_format_get_with_colons_rejected(self, client, mgmt_headers):
+        """GET with old-style colon-separated policy key should be rejected."""
         resp = client.get(
-            "/policy/v0/get/policy:SEV:dep-test",
+            "/management/policy/v0/get/SEV:test-key-1",
             headers=mgmt_headers,
         )
-        assert resp.status_code == 200
-        assert resp.headers.get("Deprecation") == "true"
-        data = resp.get_json()
-        assert "deprecation_warning" in data
+        assert resp.status_code == 400
 
-    def test_deprecated_delete_has_deprecation_header(self, client, mgmt_headers, app):
-        app.extensions["redis"].set(
-            "policy:SEV:dep-del",
-            json.dumps(VALID_POLICY_PAYLOAD),
-        )
+    def test_old_format_delete_with_colons_rejected(self, client, mgmt_headers):
+        """DELETE with old-style colon-separated policy key should be rejected."""
         resp = client.delete(
-            "/policy/v0/delete/policy:SEV:dep-del",
+            "/management/policy/v0/delete/SEV:test-key-1",
             headers=mgmt_headers,
         )
-        assert resp.status_code == 200
-        assert resp.headers.get("Deprecation") == "true"
+        assert resp.status_code == 400
 
-    def test_deprecated_routes_use_management_key(self, client, client_headers):
-        """Old routes should require X-MANAGEMENT-API-KEY, not X-API-KEY."""
-        resp = client.get("/policy/v0/list", headers=client_headers)
-        assert resp.status_code == 401
-
-    def test_deprecated_routes_no_key_rejected(self, client):
-        resp = client.get("/policy/v0/list")
-        assert resp.status_code == 401
+    def test_policy_without_policy_id_rejected(self, client, mgmt_headers):
+        """A policy relying on old key_id-only identification should be rejected."""
+        payload = {
+            "metadata": {
+                "name": "Old Format Policy",
+                "version": "1.0",
+                "policy_type": "SEV",
+                "key_id": "test-key-1",
+            },
+            "validation_rules": {
+                "host_data": {"exact_match": "abc123"},
+            },
+        }
+        resp = client.post(
+            "/management/policy/v0/store",
+            headers=mgmt_headers,
+            data=json.dumps(payload),
+        )
+        assert resp.status_code == 400
+        assert "Policy ID is required" in resp.get_json()["error"]
 
 
 # -- Key separation tests --

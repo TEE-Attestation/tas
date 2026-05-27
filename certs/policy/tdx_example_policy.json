@@ -2,6 +2,7 @@
   "metadata": {
     "name": "Intel TDX Security Policy",
     "policy_type": "TDX",
+    "policy_id": "tdx-policy-001",
     "key_id": "test-key-1",
     "version": "1.0",
     "description": "Example security policy for validating Intel TDX quotes",

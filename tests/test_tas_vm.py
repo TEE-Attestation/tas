@@ -22,34 +22,34 @@ class TestGpuVmVerify:
     def test_empty_evidence_returns_error(self):
         """Empty base64 payload should be rejected."""
         empty_b64 = base64.b64encode(b"").decode()
-        ok, err = gpu_vm_verify("nvidia-hopper", empty_b64, 0)
+        ok, _, err = gpu_vm_verify("nvidia-hopper", empty_b64, 0)
         assert ok is False
         assert "empty evidence" in err
 
     def test_valid_evidence_returns_not_implemented(self):
         """Non-empty evidence should return a 'not implemented' error (stub)."""
         evidence_b64 = base64.b64encode(b"\x01\x02\x03").decode()
-        ok, err = gpu_vm_verify("nvidia-hopper", evidence_b64, 0)
+        ok, _, err = gpu_vm_verify("nvidia-hopper", evidence_b64, 0)
         assert ok is False
         assert "not yet implemented" in err
 
     def test_invalid_base64_returns_error(self):
         """Invalid base64 should be caught and return an error."""
-        ok, err = gpu_vm_verify("nvidia-hopper", "!!!not-base64!!!", 0)
+        ok, _, err = gpu_vm_verify("nvidia-hopper", "!!!not-base64!!!", 0)
         assert ok is False
         assert "verification error" in err
 
     def test_device_index_in_error_message(self):
         """Device index should appear in the error message."""
         evidence_b64 = base64.b64encode(b"\xaa").decode()
-        ok, err = gpu_vm_verify("nvidia-hopper", evidence_b64, 42)
+        ok, _, err = gpu_vm_verify("nvidia-hopper", evidence_b64, 42)
         assert ok is False
         assert "42" in err
 
     def test_tee_type_in_error_message(self):
         """GPU TEE type should appear in the error message."""
         evidence_b64 = base64.b64encode(b"\xaa").decode()
-        ok, err = gpu_vm_verify("nvidia-hopper", evidence_b64, 0)
+        ok, _, err = gpu_vm_verify("nvidia-hopper", evidence_b64, 0)
         assert ok is False
         assert "nvidia-hopper" in err
 
@@ -63,34 +63,34 @@ class TestVmVerifyInputValidation:
     VALID_EVIDENCE_B64 = base64.b64encode(b"\x01\x02\x03").decode()
 
     def test_empty_nonce_rejected(self):
-        ok, err = vm_verify(
+        ok, _, err = vm_verify(
             MagicMock(), "", "amd-sev-snp", self.VALID_EVIDENCE_B64, "k1"
         )
         assert ok is False
         assert "Nonce" in err
 
     def test_none_nonce_rejected(self):
-        ok, err = vm_verify(
+        ok, _, err = vm_verify(
             MagicMock(), None, "amd-sev-snp", self.VALID_EVIDENCE_B64, "k1"
         )
         assert ok is False
         assert "Nonce" in err
 
     def test_invalid_tee_type_rejected(self):
-        ok, err = vm_verify(
+        ok, _, err = vm_verify(
             MagicMock(), "abc123", "bad-type", self.VALID_EVIDENCE_B64, "k1"
         )
         assert ok is False
         assert "TEE type" in err
 
     def test_invalid_base64_evidence_rejected(self):
-        ok, err = vm_verify(MagicMock(), "abc123", "amd-sev-snp", "!!!bad!!!", "k1")
+        ok, _, err = vm_verify(MagicMock(), "abc123", "amd-sev-snp", "!!!bad!!!", "k1")
         assert ok is False
         assert "invalid" in err.lower()
 
     def test_empty_evidence_rejected(self):
         empty_b64 = base64.b64encode(b"").decode()
-        ok, err = vm_verify(MagicMock(), "abc123", "amd-sev-snp", empty_b64, "k1")
+        ok, _, err = vm_verify(MagicMock(), "abc123", "amd-sev-snp", empty_b64, "k1")
         assert ok is False
         assert "empty" in err.lower()
 
@@ -109,7 +109,7 @@ class TestVmVerifyReportDataBinding:
     @patch("tas.tas_vm.sev_vm_verify")
     def test_binding_computes_sha512(self, mock_sev):
         """With report_data_binding=True, expected_report_data should be SHA-512."""
-        mock_sev.return_value = (True, None)
+        mock_sev.return_value = (True, "test-key", None)
 
         vm_verify(
             MagicMock(),
@@ -130,7 +130,7 @@ class TestVmVerifyReportDataBinding:
     @patch("tas.tas_vm.sev_vm_verify")
     def test_no_binding_uses_nonce(self, mock_sev):
         """Without binding, expected_report_data should be the raw nonce bytes."""
-        mock_sev.return_value = (True, None)
+        mock_sev.return_value = (True, "test-key", None)
 
         vm_verify(
             MagicMock(),
@@ -146,7 +146,7 @@ class TestVmVerifyReportDataBinding:
     @patch("tas.tas_vm.sev_vm_verify")
     def test_binding_false_uses_nonce(self, mock_sev):
         """report_data_binding=False should use the raw nonce even with wrapping_key."""
-        mock_sev.return_value = (True, None)
+        mock_sev.return_value = (True, "test-key", None)
 
         vm_verify(
             MagicMock(),
@@ -164,7 +164,7 @@ class TestVmVerifyReportDataBinding:
     @patch("tas.tas_vm.sev_vm_verify")
     def test_binding_true_no_wrapping_key_uses_nonce(self, mock_sev):
         """report_data_binding=True without wrapping_key should fall back to nonce."""
-        mock_sev.return_value = (True, None)
+        mock_sev.return_value = (True, "test-key", None)
 
         vm_verify(
             MagicMock(),
@@ -182,7 +182,7 @@ class TestVmVerifyReportDataBinding:
     @patch("tas.tas_vm.tdx_vm_verify")
     def test_binding_dispatches_to_tdx(self, mock_tdx):
         """Binding should work for intel-tdx as well."""
-        mock_tdx.return_value = (True, None)
+        mock_tdx.return_value = (True, "test-key", None)
 
         vm_verify(
             MagicMock(),
@@ -213,42 +213,46 @@ class TestVmVerifyReturnPropagation:
 
     @patch("tas.tas_vm.sev_vm_verify")
     def test_sev_success_propagated(self, mock_sev):
-        """vm_verify should return (True, None) when sev_vm_verify succeeds."""
-        mock_sev.return_value = (True, None)
-        ok, err = vm_verify(
+        """vm_verify should return (True, key_id, None) when sev_vm_verify succeeds."""
+        mock_sev.return_value = (True, "prop-key", None)
+        ok, key_id, err = vm_verify(
             MagicMock(), self.NONCE, "amd-sev-snp", self.TEE_EVIDENCE_B64, self.KEY_ID
         )
         assert ok is True
+        assert key_id == "prop-key"
         assert err is None
 
     @patch("tas.tas_vm.sev_vm_verify")
     def test_sev_failure_propagated(self, mock_sev):
-        """vm_verify should return (False, error) when sev_vm_verify fails."""
-        mock_sev.return_value = (False, "SEV verification failed")
-        ok, err = vm_verify(
+        """vm_verify should return (False, None, error) when sev_vm_verify fails."""
+        mock_sev.return_value = (False, None, "SEV verification failed")
+        ok, key_id, err = vm_verify(
             MagicMock(), self.NONCE, "amd-sev-snp", self.TEE_EVIDENCE_B64, self.KEY_ID
         )
         assert ok is False
+        assert key_id is None
         assert err == "SEV verification failed"
 
     @patch("tas.tas_vm.tdx_vm_verify")
     def test_tdx_success_propagated(self, mock_tdx):
-        """vm_verify should return (True, None) when tdx_vm_verify succeeds."""
-        mock_tdx.return_value = (True, None)
-        ok, err = vm_verify(
+        """vm_verify should return (True, key_id, None) when tdx_vm_verify succeeds."""
+        mock_tdx.return_value = (True, "prop-key", None)
+        ok, key_id, err = vm_verify(
             MagicMock(), self.NONCE, "intel-tdx", self.TEE_EVIDENCE_B64, self.KEY_ID
         )
         assert ok is True
+        assert key_id == "prop-key"
         assert err is None
 
     @patch("tas.tas_vm.tdx_vm_verify")
     def test_tdx_failure_propagated(self, mock_tdx):
-        """vm_verify should return (False, error) when tdx_vm_verify fails."""
-        mock_tdx.return_value = (False, "TDX verification failed")
-        ok, err = vm_verify(
+        """vm_verify should return (False, None, error) when tdx_vm_verify fails."""
+        mock_tdx.return_value = (False, None, "TDX verification failed")
+        ok, key_id, err = vm_verify(
             MagicMock(), self.NONCE, "intel-tdx", self.TEE_EVIDENCE_B64, self.KEY_ID
         )
         assert ok is False
+        assert key_id is None
         assert err == "TDX verification failed"
 
 
@@ -275,7 +279,7 @@ class TestVmVerifyGpuEvidence:
             }
             for i in range(17)
         ]
-        ok, err = vm_verify(
+        ok, _, err = vm_verify(
             MagicMock(),
             self.NONCE,
             "amd-sev-snp",
@@ -298,7 +302,7 @@ class TestVmVerifyGpuEvidence:
             }
             for i in range(16)
         ]
-        ok, err = vm_verify(
+        ok, _, err = vm_verify(
             MagicMock(),
             self.NONCE,
             "amd-sev-snp",
@@ -321,7 +325,7 @@ class TestVmVerifyGpuEvidence:
                 "device-index": 0,
             },
         ]
-        ok, err = vm_verify(
+        ok, _, err = vm_verify(
             MagicMock(),
             self.NONCE,
             "amd-sev-snp",
@@ -334,11 +338,11 @@ class TestVmVerifyGpuEvidence:
         assert ok is False
         assert "not yet implemented" in err
 
-    @patch("tas.tas_vm.gpu_vm_verify", return_value=(True, None))
+    @patch("tas.tas_vm.gpu_vm_verify", return_value=(True, None, None))
     @patch("tas.tas_vm.sev_vm_verify")
     def test_gpu_hashes_included_in_binding(self, mock_sev, mock_gpu):
         """GPU evidence SHA-512 hashes should be included in the binding."""
-        mock_sev.return_value = (True, None)
+        mock_sev.return_value = (True, "test-key", None)
 
         gpu0_raw = b"\xaa\xbb"
         gpu1_raw = b"\xcc\xdd"
@@ -375,11 +379,11 @@ class TestVmVerifyGpuEvidence:
         call_kwargs = mock_sev.call_args
         assert call_kwargs.kwargs["expected_report_data"] == expected
 
-    @patch("tas.tas_vm.gpu_vm_verify", return_value=(True, None))
+    @patch("tas.tas_vm.gpu_vm_verify", return_value=(True, None, None))
     @patch("tas.tas_vm.sev_vm_verify")
     def test_gpu_evidence_sorted_by_device_index(self, mock_sev, mock_gpu):
         """GPU evidence should be sorted by device-index for deterministic hashing."""
-        mock_sev.return_value = (True, None)
+        mock_sev.return_value = (True, "test-key", None)
 
         gpu_entries = [
             {
@@ -427,7 +431,7 @@ class TestVmVerifyGpuEvidence:
         with patch("tas.tas_vm.sev_vm_verify") as mock_sev, patch(
             "tas.tas_vm.gpu_vm_verify"
         ) as mock_gpu:
-            mock_sev.return_value = (True, None)
+            mock_sev.return_value = (True, "test-key", None)
 
             vm_verify(
                 MagicMock(),
@@ -442,11 +446,11 @@ class TestVmVerifyGpuEvidence:
 
             mock_gpu.assert_not_called()
 
-    @patch("tas.tas_vm.gpu_vm_verify", return_value=(True, None))
+    @patch("tas.tas_vm.gpu_vm_verify", return_value=(True, None, None))
     @patch("tas.tas_vm.sev_vm_verify")
     def test_binding_without_gpu_evidence_no_gpu_verify(self, mock_sev, mock_gpu):
         """Binding without gpu_evidence should not call gpu_vm_verify."""
-        mock_sev.return_value = (True, None)
+        mock_sev.return_value = (True, "test-key", None)
 
         vm_verify(
             MagicMock(),
@@ -473,8 +477,8 @@ class TestVmVerifyGpuEvidence:
     def test_second_gpu_failure_after_first_passes(self, mock_sev, mock_gpu):
         """If the second GPU fails, its error should be returned."""
         mock_gpu.side_effect = [
-            (True, None),  # GPU 0 passes
-            (False, "GPU 1 attestation invalid"),  # GPU 1 fails
+            (True, None, None),  # GPU 0 passes
+            (False, None, "GPU 1 attestation invalid"),  # GPU 1 fails
         ]
 
         gpu_evidence = [
@@ -490,7 +494,7 @@ class TestVmVerifyGpuEvidence:
             },
         ]
 
-        ok, err = vm_verify(
+        ok, _, err = vm_verify(
             MagicMock(),
             self.NONCE,
             "amd-sev-snp",

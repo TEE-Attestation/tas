@@ -68,28 +68,22 @@ def store_policy():
             400,
         )
 
-    if not POLICY_KEY_COMPONENT_RE.match(str(policy_type)):
-        logger.error(f"Invalid policy_type: {policy_type}")
-        return (
-            jsonify(
-                {
-                    "error": "Invalid policy_type. Use only alphanumeric characters, hyphens, underscores, and dots"
-                }
-            ),
-            400,
-        )
-
     key_id = metadata.get("key_id")
     if not key_id:
         logger.error("Policy metadata missing key_id")
         return jsonify({"error": "Key ID is required in metadata"}), 400
 
-    if not POLICY_KEY_COMPONENT_RE.match(str(key_id)):
-        logger.error(f"Invalid key_id: {key_id}")
+    policy_id = metadata.get("policy_id")
+    if not policy_id:
+        logger.error("Policy metadata missing policy_id")
+        return jsonify({"error": "Policy ID is required in metadata"}), 400
+
+    if not POLICY_KEY_COMPONENT_RE.match(str(policy_id)):
+        logger.error(f"Invalid policy_id: {policy_id}")
         return (
             jsonify(
                 {
-                    "error": "Invalid key_id. Use only alphanumeric characters, hyphens, underscores, and dots"
+                    "error": "Invalid policy_id. Use only alphanumeric characters, hyphens, underscores, and dots"
                 }
             ),
             400,
@@ -97,9 +91,7 @@ def store_policy():
 
     is_signed = is_policy_signed(policy)
     if is_signed and "signed_data" in policy.get("signature", {}):
-        logger.error(
-            f"Policy {policy_type}:{key_id} uses deprecated 'signed_data' field"
-        )
+        logger.error(f"Policy {policy_id} uses deprecated 'signed_data' field")
         return (
             jsonify(
                 {
@@ -112,7 +104,7 @@ def store_policy():
 
     warning_message = None
     if not is_signed:
-        logger.warning(f"Policy {policy_type}:{key_id} is not signed")
+        logger.warning(f"Policy {policy_id} is not signed")
         warning_message = (
             "WARNING: Policy is not signed and cannot be verified for integrity"
         )
@@ -125,7 +117,7 @@ def store_policy():
                 400,
             )
     else:
-        logger.info(f"Policy {policy_type}:{key_id} is signed")
+        logger.info(f"Policy {policy_id} is signed")
         if not verify_policy_signature(
             policy, current_app.config.get("TAS_TRUSTED_KEYS", [])
         ):
@@ -135,7 +127,7 @@ def store_policy():
 
     try:
         redis_client = _get_redis()
-        policy_key = f"policy:{policy_type}:{key_id}"
+        policy_key = f"policy:{policy_id}"
 
         if redis_client.get(policy_key) is not None:
             logger.error(f"Policy '{policy_key}' already exists in Redis")
@@ -157,16 +149,17 @@ def store_policy():
         return jsonify({"error": "Failed to store policy in Redis"}), 500
 
 
-@management_bp.route("/policy/v0/get/<policy_key>", methods=["GET"])
-def get_policy(policy_key):
+@management_bp.route("/policy/v0/get/<policy_id>", methods=["GET"])
+def get_policy(policy_id):
     """Retrieve a security policy from Redis."""
     logger.info(
-        f"Received policy get request for '{policy_key}' from {request.remote_addr}"
+        f"Received policy get request for '{policy_id}' from {request.remote_addr}"
     )
     auth_response = authenticate_management_request()
     if auth_response:
         return auth_response
 
+    policy_key = f"policy:{policy_id}"
     is_valid, error_message = validate_policy_key(policy_key)
     if not is_valid:
         logger.error(f"Invalid policy key '{policy_key}': {error_message}")
@@ -224,8 +217,10 @@ def list_policies():
                     policy = json.loads(policy_json)
                     metadata = policy.get("metadata", {})
                     policy_info = {
-                        "policy_key": key,
+                        "policy_id": metadata.get("policy_id", "Unknown"),
                         "name": metadata.get("name", "Unknown"),
+                        "policy_type": metadata.get("policy_type", "Unknown"),
+                        "key_id": metadata.get("key_id", "Unknown"),
                         "version": metadata.get("version", "Unknown"),
                         "description": metadata.get("description", "No description"),
                         "signed": is_policy_signed(policy),
@@ -244,16 +239,17 @@ def list_policies():
         return jsonify({"error": "Failed to list policies"}), 500
 
 
-@management_bp.route("/policy/v0/delete/<policy_key>", methods=["DELETE"])
-def delete_policy(policy_key):
+@management_bp.route("/policy/v0/delete/<policy_id>", methods=["DELETE"])
+def delete_policy(policy_id):
     """Delete a security policy from Redis."""
     logger.info(
-        f"Received policy delete request for '{policy_key}' from {request.remote_addr}"
+        f"Received policy delete request for '{policy_id}' from {request.remote_addr}"
     )
     auth_response = authenticate_management_request()
     if auth_response:
         return auth_response
 
+    policy_key = f"policy:{policy_id}"
     is_valid, error_message = validate_policy_key(policy_key)
     if not is_valid:
         logger.error(f"Invalid policy key '{policy_key}': {error_message}")

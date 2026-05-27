@@ -145,13 +145,13 @@ def verify_policy_signature(policy_data, public_keys):
         return False
 
 
-# Regex for validating policy key components (type and key_id)
+# Regex for validating policy key components (type and policy_id)
 # Only allows alphanumeric characters, hyphens, underscores, and dots.
 # Rejects Redis-special characters (*, ?, [, ], \) and whitespace.
 POLICY_KEY_COMPONENT_RE = re.compile(r"^[A-Za-z0-9_.-]+\Z")
 
-# Regex for validating a full policy key: policy:{type}:{key_id}
-POLICY_KEY_RE = re.compile(r"^policy:[A-Za-z0-9_-]+:[A-Za-z0-9_.-]+\Z")
+# Regex for validating a full policy key: policy:{policy_id}
+POLICY_KEY_RE = re.compile(r"^policy:[A-Za-z0-9_.-]+\Z")
 
 
 def canonicalize_policy(policy_data):
@@ -162,7 +162,7 @@ def canonicalize_policy(policy_data):
 def validate_policy_key(policy_key):
     """
     Validate that a policy key matches the expected structure
-    'policy:{type}:{key_id}' and contains no dangerous characters.
+    'policy:{policy_id}' and contains no dangerous characters.
 
     Returns (True, None) if valid, (False, error_message) if not.
     """
@@ -172,7 +172,7 @@ def validate_policy_key(policy_key):
     if not POLICY_KEY_RE.match(policy_key):
         return False, (
             "Invalid policy key format. "
-            "Expected format: 'policy:{type}:{key_id}' "
+            "Expected format: 'policy:{policy_id}' "
             "using only alphanumeric characters, hyphens, underscores, and dots"
         )
 

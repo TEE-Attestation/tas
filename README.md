@@ -381,7 +381,8 @@ curl -X POST \
     "tee-type": "amd-sev-snp",
     "nonce": "obtained-from-get-nonce",
     "tee-evidence": "base64-encoded-attestation-report",
-    "key-id": "my-secret-key",
+    "policy-id": "my-policy-001",
+    "report-data-binding": true,
     "wrapping-key": "base64-encoded-public-key"
   }' \
   http://localhost:5000/kb/v0/get_secret
@@ -397,6 +398,7 @@ curl -X POST \
       "name": "Test Policy",
       "version": "1.0",
       "policy_type": "...",
+      "policy_id": "my-policy-001",
       "key_id": "my-key-1"
     },
     "signature": {...},
@@ -422,20 +424,20 @@ redis for data management is beyond the scope of this document. To get
 started, however, the ``redis-cli`` tool can be used to issue the ``set``
 command for a given policy key/value pair.
 
-The ``redis`` keys used by TAS take the format ``policy:$TECHNOLOGY:$KEY``,
-where ``$TECHNOLOGY`` is either ``SEV`` or ``TDX``, and ``$KEY`` must match
-the key ID to be requested with the ``tas_agent`` command. The named keys
-must also be present in the configured key broker module.
+The ``redis`` keys used by TAS take the format ``policy:$POLICY_ID``,
+where ``$POLICY_ID`` is the unique identifier specified in the policy's
+``metadata.policy_id`` field. The named ``key_id`` within the policy
+metadata must also be present in the configured key broker module.
 
 For example, to allow a TDX confidential guest to attest and request a key
-named ``my-key``, the ``redis`` policy key record would be identified by
-``policy:TDX:my-key-1``. The value to be stored against the policy key
-is the JSON document that represents the (signed) attestation policy. A
-complete example would be
+using a policy with ID ``my-tdx-policy-001``, the ``redis`` policy key record
+would be identified by ``policy:my-tdx-policy-001``. The value to be stored
+against the policy key is the JSON document that represents the (signed)
+attestation policy. A complete example would be
 
 ```bash
 # redis-cli
-127.0.0.1:6379> set policy:TDX:my-key-1 '{"metadata":{"name":..snip......"cpu_svn":{"exact_match":"030...000"}}}}}}'
+127.0.0.1:6379> set policy:my-tdx-policy-001 '{"metadata":{"name":..snip......"cpu_svn":{"exact_match":"030...000"}}}}}}'
 ```
 
 ## KBM Plugins

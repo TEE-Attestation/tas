@@ -2,6 +2,7 @@
   "metadata": {
     "name": "AMD SEV-SNP Security Policy",
     "policy_type": "SEV",
+    "policy_id": "sev-policy-001",
     "key_id": "test-key-1",
     "version": "1.0",
     "description": "Example security policy for validating AMD SEV-SNP attestation reports",

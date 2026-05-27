@@ -16,98 +16,82 @@ from tas.policy_helper import POLICY_KEY_COMPONENT_RE, validate_policy_key
 
 
 class TestValidatePolicyKey:
-    """Test cases for the validate_policy_key function."""
+    """Test cases for the validate_policy_key function.
+
+    Policy keys now use the format: policy:{policy_id}
+    where policy_id contains only alphanumeric characters, hyphens, underscores, and dots.
+    """
 
     # --- Valid keys ---
 
-    def test_valid_sev_key(self):
-        """Standard SEV policy key."""
+    def test_valid_simple_policy_id(self):
+        """Standard policy key with simple ID."""
+        is_valid, error = validate_policy_key("policy:my-sev-policy-001")
+        assert is_valid is True
+        assert error is None
+
+    def test_valid_policy_id_with_dots(self):
+        """Policy ID containing dots."""
+        is_valid, error = validate_policy_key("policy:policy.with.dots")
+        assert is_valid is True
+        assert error is None
+
+    def test_valid_policy_id_with_underscores(self):
+        """Policy ID containing underscores."""
+        is_valid, error = validate_policy_key("policy:policy_with_underscores")
+        assert is_valid is True
+        assert error is None
+
+    def test_valid_policy_id_minimal(self):
+        """Minimal single-character policy_id."""
+        is_valid, error = validate_policy_key("policy:a")
+        assert is_valid is True
+        assert error is None
+
+    def test_valid_policy_id_numeric(self):
+        """Purely numeric policy_id."""
+        is_valid, error = validate_policy_key("policy:12345")
+        assert is_valid is True
+        assert error is None
+
+    def test_valid_policy_id_mixed(self):
+        """Mixed alphanumeric with hyphens."""
+        is_valid, error = validate_policy_key("policy:sev-prod-v2.1_final")
+        assert is_valid is True
+        assert error is None
+
+    # --- Invalid keys: old format (policy:{type}:{key_id}) must be rejected ---
+
+    def test_old_format_three_parts_rejected(self):
+        """Old-style policy:TYPE:key_id format must be rejected."""
         is_valid, error = validate_policy_key("policy:SEV:my-key-1")
-        assert is_valid is True
-        assert error is None
+        assert is_valid is False
 
-    def test_valid_tdx_key(self):
-        """Standard TDX policy key."""
+    def test_old_format_tdx_rejected(self):
+        """Old-style policy:TDX:key_id format must be rejected."""
         is_valid, error = validate_policy_key("policy:TDX:my-key-1")
-        assert is_valid is True
-        assert error is None
+        assert is_valid is False
 
-    def test_valid_key_with_dots(self):
-        """Key ID containing dots."""
-        is_valid, error = validate_policy_key("policy:SEV:key.with.dots")
-        assert is_valid is True
-        assert error is None
-
-    def test_valid_key_with_underscores(self):
-        """Key ID containing underscores."""
-        is_valid, error = validate_policy_key("policy:SEV:key_with_underscores")
-        assert is_valid is True
-        assert error is None
-
-    def test_valid_key_minimal_key_id(self):
-        """Minimal single-character key_id."""
-        is_valid, error = validate_policy_key("policy:SEV:a")
-        assert is_valid is True
-        assert error is None
-
-    def test_valid_key_minimal_type(self):
-        """Minimal single-character type."""
-        is_valid, error = validate_policy_key("policy:X:my-key")
-        assert is_valid is True
-        assert error is None
-
-    def test_valid_key_custom_type(self):
-        """Custom type with hyphens."""
-        is_valid, error = validate_policy_key("policy:MY-TYPE:a")
-        assert is_valid is True
-        assert error is None
-
-    def test_valid_key_numeric_components(self):
-        """Purely numeric type and key_id."""
-        is_valid, error = validate_policy_key("policy:123:456")
-        assert is_valid is True
-        assert error is None
+    def test_old_format_extra_colons_rejected(self):
+        """Multiple colons in the key must be rejected."""
+        is_valid, error = validate_policy_key("policy:SEV:my:key:extra")
+        assert is_valid is False
 
     # --- Invalid keys: wrong structure ---
 
-    def test_invalid_missing_key_id(self):
-        """Missing key_id segment (only two parts)."""
-        is_valid, error = validate_policy_key("policy:SEV")
-        assert is_valid is False
-
-    def test_invalid_empty_key_id(self):
-        """Empty key_id after trailing colon."""
-        is_valid, error = validate_policy_key("policy:SEV:")
-        assert is_valid is False
-
-    def test_invalid_empty_type(self):
-        """Empty type segment."""
-        is_valid, error = validate_policy_key("policy::key-1")
-        assert is_valid is False
-
-    def test_invalid_empty_prefix(self):
-        """Empty first segment."""
-        is_valid, error = validate_policy_key(":SEV:key-1")
+    def test_invalid_empty_policy_id(self):
+        """Empty policy_id after colon."""
+        is_valid, error = validate_policy_key("policy:")
         assert is_valid is False
 
     def test_invalid_wrong_prefix(self):
         """Wrong prefix (not 'policy')."""
-        is_valid, error = validate_policy_key("nonce:abc:def")
+        is_valid, error = validate_policy_key("nonce:abc")
         assert is_valid is False
 
     def test_invalid_no_prefix(self):
         """No 'policy' prefix at all."""
-        is_valid, error = validate_policy_key("SEV:key-1")
-        assert is_valid is False
-
-    def test_invalid_extra_colons(self):
-        """Too many colon-separated segments."""
-        is_valid, error = validate_policy_key("policy:SEV:my:key:extra")
-        assert is_valid is False
-
-    def test_invalid_trailing_colon(self):
-        """Trailing colon after key_id."""
-        is_valid, error = validate_policy_key("policy:SEV:my-key-1:")
+        is_valid, error = validate_policy_key("my-policy-id")
         assert is_valid is False
 
     def test_invalid_empty_string(self):
@@ -132,54 +116,44 @@ class TestValidatePolicyKey:
 
     # --- Invalid keys: dangerous characters ---
 
-    def test_invalid_glob_asterisk_in_key_id(self):
-        """Redis glob character * in key_id."""
-        is_valid, error = validate_policy_key("policy:SEV:my-key*")
+    def test_invalid_glob_asterisk(self):
+        """Redis glob character * in policy_id."""
+        is_valid, error = validate_policy_key("policy:my-policy*")
         assert is_valid is False
 
-    def test_invalid_glob_question_in_key_id(self):
-        """Redis glob character ? in key_id."""
-        is_valid, error = validate_policy_key("policy:SEV:my-key?")
+    def test_invalid_glob_question(self):
+        """Redis glob character ? in policy_id."""
+        is_valid, error = validate_policy_key("policy:my-policy?")
         assert is_valid is False
 
-    def test_invalid_glob_brackets_in_key_id(self):
-        """Redis glob characters [] in key_id."""
-        is_valid, error = validate_policy_key("policy:SEV:my-key[1]")
+    def test_invalid_glob_brackets(self):
+        """Redis glob characters [] in policy_id."""
+        is_valid, error = validate_policy_key("policy:my-policy[1]")
         assert is_valid is False
 
-    def test_invalid_glob_asterisk_in_type(self):
-        """Redis glob character * in type segment."""
-        is_valid, error = validate_policy_key("policy:S*V:key-1")
+    def test_invalid_newline(self):
+        """Newline character in policy_id."""
+        is_valid, error = validate_policy_key("policy:my-policy\n")
         assert is_valid is False
 
-    def test_invalid_newline_in_key_id(self):
-        """Newline character in key_id."""
-        is_valid, error = validate_policy_key("policy:SEV:my-key\n")
-        assert is_valid is False
-
-    def test_invalid_space_in_key_id(self):
-        """Space character in key_id."""
-        is_valid, error = validate_policy_key("policy:SEV:my key")
-        assert is_valid is False
-
-    def test_invalid_space_in_type(self):
-        """Space character in type segment."""
-        is_valid, error = validate_policy_key("policy:S V:key-1")
+    def test_invalid_space(self):
+        """Space character in policy_id."""
+        is_valid, error = validate_policy_key("policy:my policy")
         assert is_valid is False
 
     def test_invalid_null_byte(self):
-        """Null byte in key_id."""
-        is_valid, error = validate_policy_key("policy:SEV:key\x00")
+        """Null byte in policy_id."""
+        is_valid, error = validate_policy_key("policy:policy\x00")
         assert is_valid is False
 
-    def test_invalid_backslash_in_key_id(self):
-        """Backslash in key_id."""
-        is_valid, error = validate_policy_key("policy:SEV:my\\key")
+    def test_invalid_backslash(self):
+        """Backslash in policy_id."""
+        is_valid, error = validate_policy_key("policy:my\\policy")
         assert is_valid is False
 
-    def test_invalid_semicolon_in_key_id(self):
-        """Semicolon in key_id."""
-        is_valid, error = validate_policy_key("policy:SEV:my;key")
+    def test_invalid_semicolon(self):
+        """Semicolon in policy_id."""
+        is_valid, error = validate_policy_key("policy:my;policy")
         assert is_valid is False
 
 
