@@ -180,9 +180,9 @@ def get_policy(policy_id):
         response_data = {"policy_key": policy_key, "policy": policy}
         if not is_policy_signed(policy):
             logger.warning(f"Retrieved policy '{policy_key}' is not signed")
-            response_data[
-                "warning"
-            ] = "WARNING: Policy is not signed and cannot be verified for integrity"
+            response_data["warning"] = (
+                "WARNING: Policy is not signed and cannot be verified for integrity"
+            )
 
         return jsonify(response_data), 200
 
