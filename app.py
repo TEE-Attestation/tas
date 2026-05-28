@@ -24,6 +24,7 @@ from tas.auth import authenticate_request, init_client_auth, init_management_aut
 from tas.config_loader import load_configuration
 from tas.error_handlers import register_error_handlers
 from tas.management_routes import management_bp
+from tas.nonce import check_redis_version, store_nonce, validate_nonce
 from tas.tas_logging import configure_external_logging, setup_logging
 from tas.tas_vm import vm_verify
 
@@ -148,6 +149,9 @@ try:
     # Test the connection to ensure Redis is reachable
     redis_client.ping()
     logger.info("Successful Connection to Redis Server")
+
+    check_redis_version(redis_client)
+
     if redis_password:
         logger.info("Redis AUTH enabled")
     else:
@@ -237,34 +241,6 @@ except Exception as e:
     raise RuntimeError(f"Failed to open KBM client connection: {e}")
 
 
-# Function to store a nonce with an expiration time
-def store_nonce(nonce):
-    logger.debug(f"Storing nonce with expiration: {NONCE_EXPIRATION_SECONDS}s")
-    redis_client.setex(nonce, NONCE_EXPIRATION_SECONDS, int(time.time()))
-    logger.debug("Nonce stored successfully")
-
-
-# Function to validate a nonce
-def validate_nonce(nonce):
-    logger.debug(f"Validating nonce: {nonce[:8]}...")
-    timestamp = redis_client.get(nonce)
-    if not timestamp:
-        logger.warning("Nonce validation failed: Invalid or expired nonce")
-        return False, "Invalid or expired nonce"
-
-    # Check if the nonce has expired
-    current_time = int(time.time())
-    if current_time - int(timestamp) > NONCE_EXPIRATION_SECONDS:
-        logger.warning("Nonce validation failed: Nonce has expired")
-        redis_client.delete(nonce)
-        return False, "Nonce has expired"
-
-    # Nonce is valid
-    logger.debug("Nonce validation successful, removing from Redis")
-    redis_client.delete(nonce)  # Remove nonce after successful validation
-    return True, None
-
-
 # Endpoint to generate and send a nonce
 @app.route("/kb/v0/get_nonce", methods=["GET"])
 def get_nonce():
@@ -278,7 +254,7 @@ def get_nonce():
     logger.debug(f"Generated nonce: {nonce}")
 
     # Store the nonce in Redis
-    store_nonce(nonce)
+    store_nonce(redis_client, nonce, NONCE_EXPIRATION_SECONDS)
     logger.info("Nonce generated and stored successfully")
 
     return jsonify({"nonce": nonce})
@@ -311,7 +287,7 @@ def get_secret():
         return jsonify({"error": "Nonce is required"}), 400
 
     nonce = str(nonce).strip('"')
-    is_valid, error_message = validate_nonce(nonce)
+    is_valid, error_message = validate_nonce(redis_client, nonce)
     if not is_valid:
         logger.error(f"Nonce validation failed: {error_message}")
         return jsonify({"error": error_message}), 401
