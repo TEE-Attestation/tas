@@ -428,9 +428,10 @@ class TestVmVerifyGpuEvidence:
                 "device-index": 0,
             },
         ]
-        with patch("tas.tas_vm.sev_vm_verify") as mock_sev, patch(
-            "tas.tas_vm.gpu_vm_verify"
-        ) as mock_gpu:
+        with (
+            patch("tas.tas_vm.sev_vm_verify") as mock_sev,
+            patch("tas.tas_vm.gpu_vm_verify") as mock_gpu,
+        ):
             mock_sev.return_value = (True, "test-key", None)
 
             vm_verify(
