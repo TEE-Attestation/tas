@@ -51,7 +51,7 @@ pip install .
 cd ..
 pip install -r requirements.txt
 
-# 3. Start Redis (required)
+# 3. Start Redis 6.2+ (required)
 redis-server &
 
 # 4. Set environment variables
@@ -81,7 +81,7 @@ With TAS running you can use the [TAS agent](https://github.com/TEE-Attestation/
 ### Required Software
 
 - **Python** (>= 3.8)
-- **Redis**
+- **Redis** (>= 6.2)
 
 **Note:** If you want to use the KMIP KBM plugin, ensure PyKMIP is installed. Note that PyKMIP does not work on Python 3.12 or later because it relies on ssl.wrap_socket(), which was removed in Python 3.12, so your venv will need a Python version between 3.8 and 3.11.
 
@@ -565,7 +565,7 @@ Contributing to the project is simple! Just send a pull request through GitHub. 
 ```
 Error: Failed to connect to the Redis server
 ```
-**Solution**: Ensure Redis is running on the configured host/port
+**Solution**: Ensure Redis 6.2+ is running on the configured host/port
 ```bash
 redis-server &  # Start Redis
 redis-cli ping  # Test connectivity

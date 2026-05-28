@@ -48,6 +48,14 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y redis-server iproute2 psmisc
           redis-server --version
+          # Assert Redis >= 6.2 (required for GETDEL)
+          REDIS_VER=$(redis-server --version | grep -oP 'v=\K[0-9]+\.[0-9]+')
+          if python3 -c "assert tuple(int(x) for x in '$REDIS_VER'.split('.')) >= (6,2), f'Redis {"$REDIS_VER"} < 6.2'"; then
+            echo "Redis version $REDIS_VER OK (>= 6.2)"
+          else
+            echo "::error::Redis version $REDIS_VER is below the required 6.2"
+            exit 1
+          fi
           pip install --upgrade pip
           git clone https://github.com/TEE-Attestation/sev_pytools.git
           cd sev_pytools && pip install . && cd ..

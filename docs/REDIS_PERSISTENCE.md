@@ -1,6 +1,6 @@
 # Redis Persistence
 
-TAS stores security policies in Redis. By default, TAS automatically configures
+TAS requires **Redis 6.2 or later** (for the `GETDEL` command used in atomic nonce validation). TAS stores security policies in Redis. By default, TAS automatically configures
 Redis persistence at startup so policies survive Redis and host restarts. This
 is done via Redis `CONFIG SET` commands — no manual Redis configuration is needed.
 
@@ -110,7 +110,7 @@ AOF and RDB files. To protect them:
 2. **Signed policies**: Set `TAS_ENFORCE_SIGNED_POLICIES=true`. TAS re-verifies
    policy signatures at attestation time, so tampered AOF/RDB data is rejected.
 3. **Redis authentication**: Set `TAS_REDIS_PASSWORD` to require AUTH.
-4. **Redis ACLs** (Redis 6+): Restrict the TAS user to only the commands it
+4. **Redis ACLs** (Redis 6.2+, required by TAS): Restrict the TAS user to only the commands it
    needs.
 
 See [CONFIG.md](CONFIG.md) for the full configuration reference.

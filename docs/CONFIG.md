@@ -123,7 +123,7 @@ Stored in Flask's config; set directly via env without prefix:
 | TAS_MANAGEMENT_API_KEY | str | `""` | **Yes** | Shared secret used to authenticate management API requests (policy CRUD). Must be at least `TAS_MANAGEMENT_API_KEY_MIN_LENGTH` characters long. Sent via the `X-MANAGEMENT-API-KEY` header. |
 | TAS_MANAGEMENT_API_KEY_MIN_LENGTH | int | `64` | No | Minimum number of characters required for `TAS_MANAGEMENT_API_KEY`. The application refuses to start if the management key is shorter than this value. |
 | TAS_NONCE_EXPIRATION_SECONDS | int | `120` | No | Number of seconds a nonce remains valid after creation. Nonces older than this are rejected during attestation verification. |
-| TAS_REDIS_HOST | str | `"localhost"` | No | Hostname or IP address of the Redis server used for nonce storage, certificate caching, and policy storage. |
+| TAS_REDIS_HOST | str | `"localhost"` | No | Hostname or IP address of the Redis server (>= 6.2) used for nonce storage, certificate caching, and policy storage. TAS validates the server version at startup and refuses to start if Redis is older than 6.2. |
 | TAS_REDIS_PORT | int | `6379` | No | Port number of the Redis server. |
 | TAS_REDIS_PASSWORD | str | `""` | No | Redis AUTH password. When set, TAS authenticates to Redis on connection. Always set via environment variable, never in config files. |
 | TAS_REDIS_PERSISTENCE | bool | `true` | No | When `true`, TAS configures Redis AOF + RDB persistence at startup via `CONFIG SET`. Set to `false` if your Redis is externally managed or you want to use your own `redis.conf` settings. Check `GET /management/status` for runtime persistence state. See [REDIS_PERSISTENCE.md](REDIS_PERSISTENCE.md) for details. |
