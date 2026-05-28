@@ -80,7 +80,7 @@ With TAS running you can use the [TAS agent](https://github.com/TEE-Attestation/
 
 ### Required Software
 
-- **Python** (>= 3.8)
+- **Python** (>= 3.10)
 - **Redis** (>= 6.2)
 
 **Note:** If you want to use the KMIP KBM plugin, ensure PyKMIP is installed. Note that PyKMIP does not work on Python 3.12 or later because it relies on ssl.wrap_socket(), which was removed in Python 3.12, so your venv will need a Python version between 3.8 and 3.11.
