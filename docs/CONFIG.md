@@ -127,6 +127,8 @@ Stored in Flask's config; set directly via env without prefix:
 | TAS_REDIS_PORT | int | `6379` | No | Port number of the Redis server. |
 | TAS_REDIS_PASSWORD | str | `""` | No | Redis AUTH password. When set, TAS authenticates to Redis on connection. Always set via environment variable, never in config files. |
 | TAS_REDIS_PERSISTENCE | bool | `true` | No | When `true`, TAS configures Redis AOF + RDB persistence at startup via `CONFIG SET`. Set to `false` if your Redis is externally managed or you want to use your own `redis.conf` settings. Check `GET /management/status` for runtime persistence state. See [REDIS_PERSISTENCE.md](REDIS_PERSISTENCE.md) for details. |
+| TAS_EPHEMERAL_REDIS_URI | str | `""` | No | Redis URI for an optional ephemeral Redis instance. When set, nonces and rate-limit counters are stored here instead of the primary Redis. Policies always remain on the primary. TAS validates connectivity and Redis version (>= 6.2) at startup. Treated as sensitive — masked in logs. |
+| TAS_EPHEMERAL_REDIS_PASSWORD | str | `""` | No | Optional AUTH password for the ephemeral Redis instance. Use this when you do not want to embed credentials in `TAS_EPHEMERAL_REDIS_URI`. Treated as sensitive — masked in logs. |
 | TAS_PLUGIN_PREFIX | str | `"tas_kbm"` | No | Module name prefix used to discover KBM (Key Broker Module) plugins at startup. Only modules whose name starts with this prefix are loaded. |
 | TAS_KBM_PLUGIN | str | `"tas_kbm_mock"` | No | Exact module name of the KBM plugin to activate. Must match one of the discovered plugins. Controls which key broker backend TAS uses (e.g., mock, KMIP, KMIP-JSON). |
 | TAS_KBM_CONFIG_FILE | str | `"./config/kbm_mock_config.yaml"` | No | Path to the configuration file passed to the selected KBM plugin during initialisation. The format depends on the plugin (e.g., PyKMIP conf, KMIP-JSON YAML). |
@@ -148,11 +150,96 @@ These live under `app.config["TAS"]` as a nested dictionary. Set them in the YAM
 | logging.quiet | bool | `false` | When `true`, forces the log level to `WARNING` regardless of `logging.level`. |
 | logging.cli | bool | `false` | When `true`, enables CLI-friendly log formatting (plain text, no timestamps). |
 
-#### Rate Limits (`TAS.limits.*`)
+#### Rate Limiting
+
+TAS uses [Flask-Limiter](https://flask-limiter.readthedocs.io/) to enforce per-IP rate limits on client routes (`/kb/v0/get_nonce`, `/kb/v0/get_secret`, `/version`). Management routes are **not** rate-limited. The default limit is **200 requests per minute per source IP**.
+
+When a client exceeds the limit, TAS returns `429 Too Many Requests` with a JSON body and a `Retry-After` header. The `tas_agent` already handles 429 responses with exponential backoff.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| limits.max_nonce_per_minute | int | `120` | Maximum number of nonces that can be generated per minute. Requests exceeding this limit are rejected. |
+| RATELIMIT_ENABLED | bool | `true` | Rate limiting toggle switch. Set to `false` to disable all client-route rate limiting. |
+| RATELIMIT_HEADERS_ENABLED | bool | `true` | When `true`, responses include `RateLimit-*` headers showing remaining quota. |
+| RATELIMIT_STRATEGY | str | `"fixed-window"` | Rate limiting strategy. See [Flask-Limiter strategies](https://flask-limiter.readthedocs.io/en/stable/strategies.html). |
+| RATELIMIT_SWALLOW_ERRORS | bool | `true` | When `true`, rate limiting degrades gracefully if Redis is unreachable (requests are allowed through). |
+| RATELIMIT_KEY_PREFIX | str | `"tas_ratelimit:"` | Redis key prefix for rate limit counters. Change if running multiple TAS instances sharing a Redis server. |
+| RATELIMIT_STORAGE_URI | str | *(derived)* | Explicit Redis URI for rate limit counters. When set to a non-empty value, Flask-Limiter uses it unchanged. When absent (or empty/whitespace/null), TAS derives the limiter target: `TAS_EPHEMERAL_REDIS_URI` if configured, otherwise the shared primary Redis connection pool. |
+| TAS_CLIENT_RATE_LIMIT | str | `"200 per minute"` | Rate limit applied to all client routes. Uses [Flask-Limiter rate string syntax](https://flask-limiter.readthedocs.io/en/stable/configuration.html#rate-limit-string-notation) (e.g. `"100 per minute"`, `"5 per second"`). |
+| TAS_TRUST_X_FORWARDED_FOR | bool | `false` | When `true`, TAS uses the first IP from the `X-Forwarded-For` header for rate limiting instead of `request.remote_addr`. Enable this **only** when TAS runs behind a trusted reverse proxy (e.g., Nginx) — otherwise clients can spoof their IP to bypass rate limits. |
+
+`RATELIMIT_*` keys are Flask-Limiter native config and can be set via the config file or Flask env mechanisms. `TAS_CLIENT_RATE_LIMIT` and `TAS_TRUST_X_FORWARDED_FOR` are TAS-specific keys and can be overridden via environment variable.
+
+#### Redis routing
+
+By default, TAS uses a single Redis instance for policies, nonces, cert/collateral caching, and rate-limit counters. Set `TAS_EPHEMERAL_REDIS_URI` to route nonces and rate-limit counters to a separate Redis instance while keeping policies on the primary.
+
+**Precedence for rate-limit storage:**
+
+1. `RATELIMIT_STORAGE_URI` (explicit user override) — used unchanged if non-empty.
+2. `TAS_EPHEMERAL_REDIS_URI` — used when no explicit override is set.
+3. Shared primary pool — used when neither is configured.
+
+**Deployment examples:**
+
+```yaml
+# Single Redis (default) — everything shares one instance
+TAS_REDIS_HOST: redis.internal
+TAS_REDIS_PORT: 6379
+```
+
+```yaml
+# Primary + ephemeral — policies on primary, nonces and rate limiting on ephemeral
+TAS_REDIS_HOST: redis-persistent.internal
+TAS_EPHEMERAL_REDIS_URI: "redis://redis-ephemeral.internal:6379/0"
+```
+
+```yaml
+# Explicit rate-limit override — bypasses TAS routing for Flask-Limiter only
+TAS_REDIS_HOST: redis-persistent.internal
+TAS_EPHEMERAL_REDIS_URI: "redis://redis-ephemeral.internal:6379/0"
+RATELIMIT_STORAGE_URI: "redis://redis-ratelimit.internal:6379/0"
+```
+
+**Why separate Redis instances?**
+
+Nonces and rate-limit counters are short-lived, write-heavy, and disposable —
+the opposite of policies. On a single Redis instance with AOF persistence
+enabled, nonce SET/GETDEL traffic and rate-limit counter increments add
+avoidable AOF growth and contribute to `fsync` and rewrite load even though
+the data expires in seconds to minutes. At scale this creates three problems:
+
+| Workloads | Attestation interval | Nonce writes/sec | Wasted AOF entries/day |
+|-----------|----------------------|------------------|------------------------|
+| 1,000 | 5 min | ~7 | ~600 K |
+| 5,000 | 5 min | ~33 | ~2.9 M |
+| 10,000 | 5 min | ~67 | ~5.8 M |
+
+Rate-limit counters add to the total: every client request increments at least
+one counter key and, under the default `fixed-window` strategy, each window
+creates a new key that expires shortly after. The combined ephemeral write
+volume (nonces + rate-limit metadata) is what drives the concerns below.
+
+1. **SSD write endurance** — These unnecessary writes may become an issue on SSDs,
+   which wear out over time. Each nonce op is roughly ~100 bytes in the AOF, and
+   each rate-limit counter increment is comparable. At 10 K workloads the
+   combined nonce and rate-limit traffic can exceed ~578 MB/day of raw AOF
+   writes, and SSD internal write amplification can turn that into materially
+   higher NAND wear for data that is intentionally ephemeral.
+
+2. **Tail-latency isolation** — When Redis persistence is enabled, AOF `fsync`
+   and rewrite activity can introduce tail-end latency spikes. Splitting nonces
+   and rate-limit counters onto an ephemeral instance (`appendonly no`,
+   `save ""`) prevents short-lived ephemeral traffic from being coupled to
+   persistent policy-store I/O and keeps nonce and rate-limit latency more
+   predictable.
+
+3. **Failure-domain separation** — If the primary Redis needs a failover or is
+   busy with an RDB save, nonce generation and rate limiting continue
+   uninterrupted on the ephemeral instance.
+
+For small deployments (tens of workloads) a single instance is fine. Consider
+splitting once sustained nonce and rate-limit write volume makes SSD wear or
+fsync latency a concern.
 
 ### Validation at startup
 

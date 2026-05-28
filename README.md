@@ -26,6 +26,7 @@ TAS provides:
 - **Key Management**: Secure key retrieval with cryptographic nonce validation
 - **Policy Management**: Store and validate security policies for attestation
 - **Pluggable Architecture**: Support for multiple Key Broker Modules (KBM)
+- **Rate Limiting**: Per-IP rate limiting on client routes with configurable limits and proxy-aware keying
 
 ![Simplified TAS Architecture](docs/images/simpleTAS.png)
 
