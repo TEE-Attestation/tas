@@ -40,10 +40,23 @@ class BaseConfig:
     TAS_REDIS_PORT = 6379
     TAS_REDIS_PASSWORD = ""
     TAS_REDIS_PERSISTENCE = True
+    TAS_EPHEMERAL_REDIS_URI = ""
+    TAS_EPHEMERAL_REDIS_PASSWORD = ""
     TAS_PLUGIN_PREFIX = "tas_kbm"
     TAS_KBM_CONFIG_FILE = "./config/kbm_mock_config.yaml"
     TAS_KBM_PLUGIN = "tas_kbm_mock"
     TAS_EXTRA_PLUGIN_DIR = None
+
+    # Rate limiting (Flask-Limiter native keys)
+    RATELIMIT_ENABLED = True
+    RATELIMIT_HEADERS_ENABLED = True
+    RATELIMIT_STRATEGY = "fixed-window"
+    RATELIMIT_SWALLOW_ERRORS = True
+    RATELIMIT_KEY_PREFIX = "tas_ratelimit:"
+
+    # Proxy-aware IP keying
+    TAS_CLIENT_RATE_LIMIT = "200 per minute"
+    TAS_TRUST_X_FORWARDED_FOR = False
 
     def __init__(self):
         logger.debug("Initializing BaseConfig with default TAS settings")

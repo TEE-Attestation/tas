@@ -41,6 +41,10 @@ KNOWN_TAS_KEYS = {
     "TAS_KBM_PLUGIN",
     "TAS_ENFORCE_SIGNED_POLICIES",
     "TAS_EXTRA_PLUGIN_DIR",
+    "TAS_CLIENT_RATE_LIMIT",
+    "TAS_TRUST_X_FORWARDED_FOR",
+    "TAS_EPHEMERAL_REDIS_URI",
+    "TAS_EPHEMERAL_REDIS_PASSWORD",
 }
 
 
@@ -203,7 +207,13 @@ def _load_trusted_keys(path: str):
 
 def apply_tas_env_overrides(app):
     # Direct overrides (exact match)
-    _SENSITIVE_KEYS = {"TAS_REDIS_PASSWORD", "TAS_API_KEY", "TAS_MANAGEMENT_API_KEY"}
+    _SENSITIVE_KEYS = {
+        "TAS_REDIS_PASSWORD",
+        "TAS_API_KEY",
+        "TAS_MANAGEMENT_API_KEY",
+        "TAS_EPHEMERAL_REDIS_URI",
+        "TAS_EPHEMERAL_REDIS_PASSWORD",
+    }
     direct_overrides = []
     for key in KNOWN_TAS_KEYS:
         if key in os.environ:
@@ -347,3 +357,23 @@ def load_configuration(app):
         app.config["TAS_TRUSTED_KEYS"] = trusted_keys
 
     logger.info("Configuration loading completed successfully")
+
+
+def resolve_ratelimit_storage(app_config, primary_client):
+    """Return (storage_uri, storage_options, mode_label) for Flask-Limiter."""
+    # Check for explicit user override — handles None (YAML null), empty, whitespace
+    user_uri = app_config.get("RATELIMIT_STORAGE_URI")
+    if user_uri is not None and str(user_uri).strip():
+        return str(user_uri).strip(), {}, "user override"
+
+    # Derive from ephemeral Redis if configured
+    ephemeral_uri = (app_config.get("TAS_EPHEMERAL_REDIS_URI") or "").strip()
+    if ephemeral_uri:
+        return ephemeral_uri, {}, "derived ephemeral"
+
+    # Fall back to sharing the primary Redis connection pool
+    return (
+        "redis://",
+        {"connection_pool": primary_client.connection_pool},
+        "shared primary pool",
+    )
