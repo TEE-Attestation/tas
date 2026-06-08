@@ -61,15 +61,54 @@ components:
         policy-id:
           type: string
           description: Policy identifier for attestation
+        report-data-binding:
+          type: boolean
+          description: >-
+            When true, the expected CPU report_data is recomputed as
+            SHA-512(nonce || wrapping_key || SHA-512(gpu0_evidence) || ...),
+            binding the wrapping key and any GPU evidence to the CPU TEE.
+            Required for this endpoint.
         wrapping-key:
           type: string
           description: Base64-encoded client public key for wrapping
+        component-evidence:
+          $ref: '#/components/schemas/ComponentEvidence'
       required:
       - tee-type
       - nonce
       - tee-evidence
       - policy-id
+      - report-data-binding
       - wrapping-key
+    ComponentEvidence:
+      type: object
+      description: >-
+        Optional attestation evidence for additional components (e.g. GPUs)
+        verified alongside the CPU TEE. Keyed by component type.
+      properties:
+        gpu:
+          type: array
+          description: Per-GPU attestation evidence entries
+          items:
+            $ref: '#/components/schemas/GpuEvidence'
+    GpuEvidence:
+      type: object
+      properties:
+        type:
+          type: string
+          description: GPU device type
+          example: gpu-nvidia
+        evidence:
+          type: string
+          description: Base64-encoded GPU attestation evidence envelope
+        device-index:
+          type: integer
+          description: GPU device index (used for deterministic ordering of the report_data binding)
+          example: 0
+      required:
+      - type
+      - evidence
+      - device-index
     SecretResponse:
       type: object
       properties:
@@ -166,11 +205,28 @@ components:
           $ref: '#/components/schemas/PolicyMetadata'
         validation_rules:
           $ref: '#/components/schemas/PolicyValidationRules'
+        components:
+          $ref: '#/components/schemas/PolicyComponents'
         signature:
           $ref: '#/components/schemas/PolicySignature'
       required:
       - metadata
       - validation_rules
+    PolicyComponents:
+      type: object
+      description: >-
+        Optional policies for additional attestable components verified
+        alongside the CPU TEE. Keyed by component type (e.g. gpu).
+      properties:
+        gpu:
+          type: object
+          description: >-
+            GPU component policy, keyed by GPU device type (e.g. gpu-nvidia).
+            Each value is an NVIDIA attestation policy (with version and
+            authorization-rules) validated by nvidia_pytools against NRAS claims.
+          additionalProperties:
+            type: object
+      additionalProperties: true
     VersionResponse:
       type: object
       properties:

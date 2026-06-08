@@ -23,9 +23,11 @@ TAS is a simple attestation service that verifies attestation evidence generated
 
 TAS provides:
 - **TEE Attestation**: Validates AMD SEV-SNP and Intel TDX attestation evidence
+- **GPU Attestation**: Optional NVIDIA GPU attestation (via NRAS) cryptographically bound to the CPU TEE
 - **Key Management**: Secure key retrieval with cryptographic nonce validation
 - **Policy Management**: Store and validate security policies for attestation
 - **Pluggable Architecture**: Support for multiple Key Broker Modules (KBM)
+- **Rate Limiting**: Per-IP rate limiting on client routes with configurable limits and proxy-aware keying
 
 ![Simplified TAS Architecture](docs/images/simpleTAS.png)
 
@@ -47,6 +49,11 @@ pip install .
 cd ..
 git clone https://github.com/TEE-Attestation/tdx_pytools.git
 cd tdx_pytools
+pip install .
+cd ..
+# Optional: install nvidia_pytools for NVIDIA GPU attestation
+git clone https://github.com/TEE-Attestation/nvidia_pytools.git
+cd nvidia_pytools
 pip install .
 cd ..
 pip install -r requirements.txt
@@ -101,6 +108,7 @@ redis-cli ping
 
 - **AMD SEV-SNP**: Full attestation support
 - **Intel TDX**: Full attestation support  
+- **NVIDIA GPU**: Optional GPU attestation via the NVIDIA Remote Attestation Service (NRAS), bound to AMD SEV-SNP / Intel TDX evidence (requires `nvidia_pytools`)
 
 ## Installation
 
@@ -131,6 +139,12 @@ cd ..
 # Install tdx_pytools (required for Intel TDX support)
 git clone https://github.com/TEE-Attestation/tdx_pytools.git
 cd tdx_pytools
+pip install .
+cd ..
+
+# Install nvidia_pytools (optional, required only for NVIDIA GPU attestation)
+git clone https://github.com/TEE-Attestation/nvidia_pytools.git
+cd nvidia_pytools
 pip install .
 cd ..
 ```

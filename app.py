@@ -1,32 +1,29 @@
 #
 # TEE Attestation Service
 #
-# Copyright 2025 Hewlett Packard Enterprise Development LP.
+# Copyright 2025 - 2026 Hewlett Packard Enterprise Development LP.
 # SPDX-License-Identifier: MIT
 #
 # This file is part of the TEE Attestation Service.
 # See LICENSE file for details.
 #
 
-import base64
 import importlib
-import json
 import os
 import pkgutil
-import secrets
 import sys
-import time
 
 import redis
-from flask import Flask, jsonify, request
+from flask import Flask, request
 
-from tas.auth import authenticate_request, init_client_auth, init_management_auth
-from tas.config_loader import load_configuration
+from tas.auth import init_client_auth, init_management_auth
+from tas.client_routes import client_bp
+from tas.config_loader import load_configuration, resolve_ratelimit_storage
 from tas.error_handlers import register_error_handlers
 from tas.management_routes import management_bp
-from tas.nonce import check_redis_version, store_nonce, validate_nonce
+from tas.nonce import check_redis_version
+from tas.rate_limiter import setup_rate_limiter
 from tas.tas_logging import configure_external_logging, setup_logging
-from tas.tas_vm import vm_verify
 
 # Initialize Flask app and load configuration
 app = Flask(__name__)
@@ -52,7 +49,7 @@ if log_config:
     log_file = log_config.get("file", None)
     verbose = log_config.get("verbose", False)
     quiet = log_config.get("quiet", False)
-    cli = log_config.get("cli", False)
+    cli = log_config.get("cli", True)
 
     # Reconfigure the root "tas" logger with settings from config
     logger = setup_logging(
@@ -68,8 +65,6 @@ else:
 
 # Include logging settings in external loggers
 configure_external_logging()
-
-
 # add ./plugins in sys.path
 fpath = os.path.join(os.path.dirname(__file__), "plugins")
 sys.path.append(fpath)
@@ -101,8 +96,6 @@ def log_response_info(response):
 
 
 register_error_handlers(app)
-
-
 # Optionally add an extra plugin directory to sys.path
 extra_plugin_dir = app.config.get("TAS_EXTRA_PLUGIN_DIR")
 if extra_plugin_dir:
@@ -112,17 +105,11 @@ if extra_plugin_dir:
     else:
         raise RuntimeError(f"Extra plugin directory does not exist: {extra_plugin_dir}")
 
-# TEE Attestation Service version information
-TAS_VERSION = "0.1.0"
-
 # Retrieve the API key from configuration
 TAS_API_KEY = app.config["TAS_API_KEY"]
 
 if not TAS_API_KEY:
     raise RuntimeError("TAS_API_KEY environment variable is not set")
-
-# Internal variables
-NONCE_EXPIRATION_SECONDS = app.config["TAS_NONCE_EXPIRATION_SECONDS"]
 
 # Plugin discovery: respect prefix defined in the configuration
 # This allows for dynamic loading of plugins that follow the
@@ -197,8 +184,55 @@ else:
 app.extensions["redis"] = redis_client
 app.extensions["redis_config_rewrite_ok"] = _redis_config_rewrite_ok
 
+# Initialize optional ephemeral Redis client for nonces and rate-limit counters
+_ephemeral_redis_uri = (app.config.get("TAS_EPHEMERAL_REDIS_URI") or "").strip()
+if _ephemeral_redis_uri:
+    try:
+        _ephemeral_kwargs = {"decode_responses": True}
+        _ephemeral_password = app.config.get("TAS_EPHEMERAL_REDIS_PASSWORD", "")
+        if _ephemeral_password:
+            _ephemeral_kwargs["password"] = _ephemeral_password
+        ephemeral_redis_client = redis.StrictRedis.from_url(
+            _ephemeral_redis_uri, **_ephemeral_kwargs
+        )
+        ephemeral_redis_client.ping()
+        logger.info("Successful connection to ephemeral Redis")
+
+        check_redis_version(ephemeral_redis_client)
+
+        app.extensions["redis_ephemeral"] = ephemeral_redis_client
+    except redis.ConnectionError as e:
+        raise RuntimeError(f"Failed to connect to ephemeral Redis: {e}")
+    except Exception as e:
+        raise RuntimeError(
+            f"An unexpected error occurred while initializing ephemeral Redis: {e}"
+        )
+else:
+    logger.info(
+        "No ephemeral Redis configured — nonces and rate limiting use primary Redis"
+    )
+
 # Register blueprints
 app.register_blueprint(management_bp)
+app.register_blueprint(client_bp)
+
+# Rate limiting storage resolution
+_rl_storage_uri, _rl_storage_options, _rl_mode = resolve_ratelimit_storage(
+    app.config, redis_client
+)
+logger.info("Rate limiter storage: %s", _rl_mode)
+
+if app.config.get("TAS_TRUST_X_FORWARDED_FOR"):
+    logger.warning(
+        "TAS_TRUST_X_FORWARDED_FOR is enabled — rate limiting will use "
+        "X-Forwarded-For header for client IP. Only enable this when TAS "
+        "is behind a trusted reverse proxy; otherwise clients can spoof "
+        "their IP to bypass rate limits."
+    )
+
+# Apply rate limit to all client blueprint routes
+limiter = setup_rate_limiter(app, client_bp, _rl_storage_uri, _rl_storage_options)
+
 
 # log discovered plugins for debugging
 logger.debug("Discovered plugins:")
@@ -212,8 +246,6 @@ if not tas_kbm_plugin:
 
 # log the selected tas_kbm plugin for debugging
 logger.info(f"Using tas_kbm plugin: {app.config['TAS_KBM_PLUGIN']}")
-
-
 # Ensure the tas_kbm plugin has the required functions
 required_functions = [
     "kbm_get_secret",
@@ -233,163 +265,21 @@ logger.info("Initializing KBM client connection")
 try:
     # use the tas_kbm plugin to open the KBM client connection
     kbm_client = kbm_open_client_connection(
-        config_file=app.config["TAS_KBM_CONFIG_FILE"]
+        config_file=app.config["TAS_KBM_CONFIG_FILE"],
+        redis_client=app.extensions.get("redis_ephemeral")
+        or app.extensions.get("redis"),
     )
     logger.info("KBM client connection established successfully")
+    app.extensions["kbm_client"] = kbm_client
+    app.extensions["kbm_get_secret"] = kbm_get_secret
 except Exception as e:
     logger.error(f"Failed to initialize KBM client: {e}")
     raise RuntimeError(f"Failed to open KBM client connection: {e}")
 
-
-# Endpoint to generate and send a nonce
-@app.route("/kb/v0/get_nonce", methods=["GET"])
-def get_nonce():
-    logger.info(f"Received nonce request from {request.remote_addr}")
-    auth_response = authenticate_request()
-    if auth_response:
-        return auth_response
-
-    # Generate a random nonce
-    nonce = secrets.token_hex(32)  # Generate a 64-character nonce
-    logger.debug(f"Generated nonce: {nonce}")
-
-    # Store the nonce in Redis
-    store_nonce(redis_client, nonce, NONCE_EXPIRATION_SECONDS)
-    logger.info("Nonce generated and stored successfully")
-
-    return jsonify({"nonce": nonce})
-
-
-# Endpoint to validate the nonce and return the secret key
-@app.route("/kb/v0/get_secret", methods=["POST"])
-def get_secret():
-    logger.info(f"Received secret request from {request.remote_addr}")
-    auth_response = authenticate_request()
-    if auth_response:
-        return auth_response
-
-    # Get the JSON data from the request
-    data = request.get_json()
-    if not data:
-        logger.error("Secret request missing JSON body")
-        return jsonify({"error": "Request body is required"}), 400
-
-    # Validate the "tee-type" field early
-    tee_type = data.get("tee-type")
-    if tee_type not in ["amd-sev-snp", "intel-tdx"]:
-        logger.error(f"Invalid TEE type received: {tee_type}")
-        return jsonify({"error": "Invalid or missing 'tee-type' field"}), 400
-
-    # Validate the "nonce" field
-    nonce = data.get("nonce")
-    if not nonce:
-        logger.error("Secret request missing nonce field")
-        return jsonify({"error": "Nonce is required"}), 400
-
-    nonce = str(nonce).strip('"')
-    is_valid, error_message = validate_nonce(redis_client, nonce)
-    if not is_valid:
-        logger.error(f"Nonce validation failed: {error_message}")
-        return jsonify({"error": error_message}), 401
-
-    # Validate the "tee-evidence" field
-    tee_evidence = data.get("tee-evidence")
-    if not tee_evidence:
-        logger.error("Secret request missing TEE evidence")
-        return jsonify({"error": "TEE evidence is required"}), 400
-
-    # Validate the "policy-id" field
-    policy_id = data.get("policy-id")
-    if not policy_id:
-        logger.error("Secret request missing policy ID")
-        return jsonify({"error": "Policy ID is required"}), 400
-
-    # Log the fields for debugging
-    logger.debug(f"Received TEE evidence: {tee_evidence}")
-    logger.debug(f"Received Policy ID: {policy_id}")
-
-    # Report data binding is required for this route,
-    # create a new route for non-binding use cases if needed in the future
-    report_data_binding = data.get("report-data-binding")
-    if report_data_binding is None:
-        logger.error("Secret request missing report data binding")
-        return jsonify({"error": "Report data binding is required"}), 400
-
-    logger.debug(f"Received report data binding: {report_data_binding}")
-
-    # Optional GPU evidence for Phase 2 - if provided, it will be passed to the vm_verify function
-    gpu_evidence = data.get("gpu-evidence", None)  # Phase 2
-
-    # Get client's wrapping key (RSA public key) from the request
-    # The public key is expected to be in base64 format
-    wrapping_key = data.get("wrapping-key")
-    if not wrapping_key:
-        logger.error("Secret request missing wrapping key")
-        return jsonify({"error": "Client's wrapping key is required"}), 400
-
-    # Decode the public key from base64
-    try:
-        wrapping_key = base64.b64decode(wrapping_key)
-        logger.debug("Successfully decoded wrapping key from base64")
-    except (TypeError, ValueError):
-        logger.error("Failed to decode wrapping key from base64")
-        return jsonify({"error": "Invalid econding format for wrapping key"}), 400
-
-    # Log the public key for debugging
-    logger.debug(f"Received public key: {wrapping_key.hex()}")
-
-    # Validate the public key
-    if not isinstance(wrapping_key, bytes):
-        logger.error("Invalid wrapping key format: not bytes")
-        return jsonify({"error": "Invalid wrapping key format"}), 400
-
-    # Call vm_verify to validate the parameters
-    logger.info(f"Starting TEE verification for type: {tee_type}")
-    is_verified, key_id, verify_error = vm_verify(
-        redis_client,
-        nonce,
-        tee_type,
-        tee_evidence,
-        policy_id,
-        wrapping_key=wrapping_key,
-        report_data_binding=report_data_binding,
-        gpu_evidence=gpu_evidence,  # NEW (for Phase 2)
-    )
-    if not is_verified:
-        logger.error(f"TEE verification failed: {verify_error}")
-        return jsonify({"error": "TEE verification failed"}), 400
-
-    # Retrieve the secret from the KMIP Broker Module
-    logger.info(f"Retrieving secret for key ID: {key_id}")
-    try:
-        secret = kbm_get_secret(kbm_client, key_id, wrapping_key)
-        logger.info("Secret retrieval successful")
-    except ValueError as e:
-        logger.error(f"Secret retrieval failed: {str(e)}")
-        return jsonify({"error": "Secret retrieval failed"}), 404
-
-    # Return the secret
-    logger.info(f"Successfully completed secret request for {request.remote_addr}")
-    return jsonify({"secret_key": secret})
-
-
-# Endpoint to retrieve the version information
-@app.route("/version")
-def version():
-    logger.info(f"Received version request from {request.remote_addr}")
-    auth_response = authenticate_request()
-    if auth_response:
-        return auth_response
-    logger.debug(f"Returning TAS version: {TAS_VERSION}")
-    return jsonify({"version": TAS_VERSION})
-
-
 if __name__ == "__main__":
     # Note: This is a simplified example and should not be used in production
-    # without proper security measures such as HTTPS, nonce expiration, etc.
-    # In a real-world scenario, you would also want to implement
-    # proper error handling and logging to ensure that the service is robust and secure
-    # and to prevent abuse of the nonce generation and validation process.
+    # without proper security measures such as HTTPS, etc.
+
     try:
         logger.info(
             f"Starting TAS server on {app.config.get('SERVER_BIND_HOST', '0.0.0.0')}:{app.config.get('SERVER_PORT', 5000)}"

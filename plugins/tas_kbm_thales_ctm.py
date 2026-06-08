@@ -15,21 +15,25 @@ from __future__ import annotations
 
 import base64
 import json
-import logging
 import os
 import re
-import threading
+import secrets
+import sys
 import time
 from typing import Any, Dict, Optional
 from urllib.parse import urljoin
 
 import requests
-import urllib3
 
 try:
     import yaml  # PyYAML (listed in requirements)
 except Exception:
     yaml = None
+
+try:
+    from redis import lock as redis_lock  # Redis locking for distributed sync
+except ImportError:
+    redis_lock = None
 
 from cryptography.hazmat.primitives.serialization import (
     load_der_public_key,
@@ -40,6 +44,17 @@ from tas.tas_logging import get_logger
 
 # Setup logging for the Thales CTM KBM plugin
 logger = get_logger("tas.plugins.tas_kbm_thales_ctm")
+
+# Log if redis_lock module was not available
+if redis_lock is None:
+    logger.debug(
+        "redis.lock module not available - distributed locking will not be available if needed"
+    )
+
+# Module-level constant: Algorithm name mapping for Thales CTM
+_CTM_ALGORITHM_MAP = {
+    "AES-KWP": "AES/AESKEYWRAPPADDING",
+}
 
 
 def _load_rsa_public_key(raw: bytes):
@@ -129,6 +144,8 @@ class _CTMKBMClient:
         domain: str = "root",
         key_wrap_algorithm: str = "AES-KWP",
         requests_timeout: Optional[int] = None,
+        create_key_if_absent: bool = False,
+        redis_client: Optional[Any] = None,
     ):
         self.host = host
         self.username = username
@@ -142,12 +159,43 @@ class _CTMKBMClient:
         self.bearer_token = None
         self.key_wrap_algorithm = key_wrap_algorithm
         self.requests_timeout = requests_timeout
-        self._lock = threading.RLock()
+        self.create_key_if_absent = create_key_if_absent
+        self.redis_client = redis_client  # Redis client for distributed locking
 
-        # Map canonical algorithm names to the strings Thales CTM accepts
-        self._ctm_algorithm_map = {
-            "AES-KWP": "AES/AESKEYWRAPPADDING",
-        }
+        # Ensure requests_timeout has a reasonable default for lock calculations
+        if not self.requests_timeout:
+            self.requests_timeout = 30
+            logger.warning(
+                "No requests_timeout configured, using safe default of 30 seconds. "
+                "This is used for calculating lock timeouts. To override, set "
+                "requests_timeout in the config file."
+            )
+
+        # Validate Redis client connectivity if create_key_if_absent is enabled
+        if self.create_key_if_absent:
+            if not self.redis_client:
+                logger.warning(
+                    "create_key_if_absent=true but no Redis client provided. "
+                    "Disabling auto-key-creation. To enable, pass a Redis client for distributed locking."
+                )
+                self.create_key_if_absent = False
+            elif redis_lock is None:
+                raise ImportError(
+                    "redis-py library with lock support is required when create_key_if_absent=true. "
+                    "The redis lock module failed to import. "
+                    "Install or reinstall redis-py: pip install 'redis>=4.0'"
+                )
+            else:
+                try:
+                    self.redis_client.ping()
+                    logger.info(
+                        "Redis client is available and healthy for distributed locking"
+                    )
+                except Exception as e:
+                    raise Exception(
+                        f"Redis client connection failed: {e}. "
+                        f"Redis is required for safe key auto-creation in multi-process deployments."
+                    )
 
         # Validate authentication configuration
         if certificate_login:
@@ -174,6 +222,9 @@ class _CTMKBMClient:
         logger.debug(
             f"Initialized Thales CTM KBM client for host: {host} with {auth_type} authentication"
         )
+
+        # Authenticate immediately to fail fast on credential/connectivity errors
+        self.authenticate()
 
     def authenticate(self):
         """Authenticate to Thales CTM and get bearer token"""
@@ -229,7 +280,13 @@ class _CTMKBMClient:
             raise Exception(f"Thales CTM auth failed: {response.status_code}")
 
     def _ensure_authenticated(self):
-        """Ensure we have a valid bearer token"""
+        """Safety check: ensure we have a valid bearer token (re-authenticates if needed).
+
+        Even though tokens are obtained in __init__(), this check guards against token expiry
+        during long-running operations (slow CTM, network latency, lock contention). If CTM
+        takes a long time or the lock waits, the 300-second token TTL could expire mid-request.
+        This defensive check re-authenticates if the token is missing.
+        """
         if not self.bearer_token:
             self.authenticate()
 
@@ -254,7 +311,14 @@ class _CTMKBMClient:
         if self.requests_timeout:
             kwargs.setdefault("timeout", self.requests_timeout)
 
-        return requests.request(method, url, **kwargs)
+        response = requests.request(method, url, **kwargs)
+
+        # Clear bearer token after each request to ensure fresh authentication on next request
+        # This prevents token expiry (300s TTL) during long-running multi-step operations like key creation
+        self.bearer_token = None
+        logger.debug("Bearer token cleared after request to prevent expiry")
+
+        return response
 
     def get_secret(self, key_id: str, wrapping_key: bytes) -> Dict[str, str]:
         """
@@ -269,123 +333,186 @@ class _CTMKBMClient:
         """
         logger.info(f"Thales CTM KBM get_secret request for key_id: {key_id}")
 
-        with self._lock:
-            if isinstance(wrapping_key, bytes):
-                wrapping_key_b64 = base64.b64encode(wrapping_key).decode("ascii")
-                logger.debug("\n" + "=" * 70)
-                logger.debug(f"Received public key (base64): {wrapping_key_b64}")
-                logger.debug("\n" + "=" * 70)
+        # Load and validate the RSA public key
+        pub = _load_rsa_public_key(wrapping_key)
+        logger.debug(f"Validated RSA public key: {pub.key_size} bits")
 
-            # Decode base64 if necessary
-            if isinstance(wrapping_key, bytes):
-                # Check if it's base64 encoded by trying to decode
+        # Step 1: Perform Key Lookup
+        logger.debug("Step 1: Performing key lookup")
+        lookup_status, resolved_key_id = self._lookup_key(key_id)
+        logger.debug(
+            f"Key lookup status: {lookup_status}, resolved_key_id: {resolved_key_id}"
+        )
+
+        if not lookup_status:
+            # Key not found
+            logger.debug(f"Key lookup failed: {key_id}")
+
+            if self.create_key_if_absent:
+                logger.debug(
+                    f"Key not found and create_key_if_absent=true, acquiring lock to create key: {key_id}"
+                )
+
+                # Acquire Redis lock for distributed synchronization
                 try:
-                    decoded = base64.b64decode(wrapping_key)
-                    # If successful and it looks like a valid key, use the decoded version
-                    if b"-----BEGIN" in decoded or len(decoded) > 100:
-                        logger.debug(
-                            "Detected base64 encoded public key, decoded successfully"
-                        )
-                        wrapping_key = decoded
-                except Exception:
-                    # Not base64 or decoding failed, use as-is
-                    logger.debug("Using public key as provided (not base64 encoded)")
+                    lock_key = f"create_key:{key_id}"
 
-            # Load and validate the RSA public key
-            pub = _load_rsa_public_key(wrapping_key)
-            logger.info(f"Validated RSA public key: {pub.key_size} bits")
+                    # Calculate lock timeouts based on requests_timeout
+                    # Accounts for ~3 CTM calls inside the lock: lookup, create, export
+                    req_timeout = self.requests_timeout
+                    operation_timeout = 3 * req_timeout
+                    lock_timeout = (
+                        operation_timeout + req_timeout
+                    )  # Outlive work + safety margin
+                    blocking_timeout = operation_timeout + (
+                        req_timeout * 0.5
+                    )  # Small margin for normal completion
 
-            temp_wrapping_key_id = None
-            try:
-                # Step 1: Generate temporary AES-256 wrapping key in CTM
-                logger.info("Step 1: Generating temporary AES-256 wrapping key in CTM")
-                temp_wrapping_key_id = self._generate_aes_key()
-
-                # Step 2: Wrap the secret with the temporary wrapping key using AES Key Wrap
-                logger.info(
-                    f"Step 2: Wrapping secret {key_id} with temporary wrapping key"
-                )
-                wrapped_secret_result = self._wrap_key(key_id, temp_wrapping_key_id)
-                wrapped_secret_material = wrapped_secret_result.get("material", "")
-
-                if not wrapped_secret_material:
-                    raise Exception("No wrapped secret material returned from CTM")
-
-                logger.info(
-                    f"Secret wrapped successfully, material length: {len(wrapped_secret_material)} chars"
-                )
-
-                # Step 3: Wrap the temporary wrapping key with the RSA public key
-                logger.info(
-                    "Step 3: Wrapping temporary wrapping key with RSA public key"
-                )
-                wrapped_wrapping_key_result = self._wrap_key_with_public_key(
-                    temp_wrapping_key_id, wrapping_key
-                )
-                wrapped_wrapping_key_material = wrapped_wrapping_key_result.get(
-                    "material", ""
-                )
-
-                if not wrapped_wrapping_key_material:
-                    raise Exception(
-                        "No wrapped wrapping key material returned from CTM"
+                    logger.debug(
+                        f"Lock timeout calculation: requests_timeout={req_timeout}s, "
+                        f"operation_timeout={operation_timeout}s, "
+                        f"lock_timeout={lock_timeout}s, "
+                        f"blocking_timeout={blocking_timeout}s"
                     )
 
-                logger.info(
-                    f"Wrapping key wrapped successfully, material length: {len(wrapped_wrapping_key_material)} chars"
-                )
+                    lock = redis_lock.Lock(
+                        self.redis_client,
+                        lock_key,
+                        timeout=lock_timeout,
+                        blocking=True,
+                        blocking_timeout=blocking_timeout,
+                    )
+                    logger.debug(f"Using Redis lock for key creation: {key_id}")
+                    logger.debug(f"Attempting to acquire lock for key {key_id}")
 
-                # Step 4: Return in the expected format
-                # Note: AES Key Wrap doesn't use IV or tag, but we include empty strings for compatibility
+                    with lock:  # Auto-releases on exit
+                        logger.debug(f"Lock acquired for key: {key_id}")
 
-                # To conform to all other data being Base64 encoded, the algorithm is encoded too.
-                algorithm_b64 = base64.b64encode(
-                    self.key_wrap_algorithm.encode("utf-8")
-                ).decode("ascii")
+                        # Double-check key still doesn't exist (in case another process created it)
+                        lookup_status, resolved_key_id = self._lookup_key(key_id)
+                        if not lookup_status:
+                            logger.debug(
+                                f"Creating key while holding lock (other clients are blocked)"
+                            )
+                            # Create the key
+                            create_status, created_key_id = self._create_secret_key(
+                                key_id
+                            )
+                            if create_status and created_key_id:
+                                resolved_key_id = created_key_id
+                                logger.info(
+                                    f"Successfully created key: {key_id} → ID: {resolved_key_id}"
+                                )
+                            else:
+                                logger.error(f"Failed to create key: {key_id}")
+                                raise Exception(
+                                    f"Thales CTM key creation failed: {key_id}"
+                                )
+                        else:
+                            logger.info(
+                                f"Key was created by another process during lock wait: {key_id}"
+                            )
 
-                result = {
-                    "wrapped_key": wrapped_wrapping_key_material,  # RSA-wrapped AES wrapping key
-                    "blob": wrapped_secret_material,  # AES Key Wrap encrypted secret
-                    "iv": "",  # Not used in AES Key Wrap
-                    "tag": "",  # Not used in AES Key Wrap
-                    "algorithm": algorithm_b64,  # Indicate the wrapping algorithm used
-                }
+                        logger.debug(f"Released Redis lock for key creation")
+                except Exception as e:
+                    logger.error(f"Key creation with lock failed: {e}")
+                    raise
+            else:
+                logger.error(f"Key not found and create_key_if_absent=false: {key_id}")
+                raise Exception(f"Thales CTM key not found: {key_id}")
 
-                # Log the payload
-                logger.debug("\n" + "=" * 70)
-                logger.debug("PAYLOAD (Result):")
-                logger.debug(f"wrapped_key: {result['wrapped_key']}")
-                logger.debug(f"blob: {result['blob']}")
-                logger.debug(f"iv: {result['iv']}")
-                logger.debug(f"tag: {result['tag']}")
-                logger.debug("=" * 70 + "\n")
+        logger.info(f"Key resolved: {resolved_key_id}")
 
-                logger.info(f"Successfully wrapped secret for key_id: {key_id}")
-                return result
+        temp_wrapping_key_id = None
+        try:
+            # Step 2: Generate temporary AES-256 wrapping key in CTM
+            logger.debug("Step 2: Generating temporary AES-256 wrapping key in CTM")
+            temp_wrapping_key_id = self._generate_aes_key()
 
-            finally:
-                # Step 5: Cleanup - delete the temporary wrapping key
-                if temp_wrapping_key_id:
-                    try:
-                        logger.info("Step 4: Cleaning up temporary wrapping key")
-                        self._delete_key(temp_wrapping_key_id)
-                        logger.info("Temporary wrapping key deleted successfully")
-                    except Exception as e:
-                        logger.warning(
-                            f"Failed to delete temporary wrapping key {temp_wrapping_key_id}: {e}"
-                        )
-                # Clear bearer token to force fresh authentication on next request
-                # Prevents token expiration issues when TAS server runs for > 300 seconds
-                self.bearer_token = None
-                logger.debug("Bearer token cleared after kbm_get_secret completion")
+            # Step 3: Wrap the secret with the temporary wrapping key using AES Key Wrap
+            logger.debug(
+                f"Step 3: Wrapping secret {resolved_key_id} with temporary wrapping key"
+            )
+            wrapped_secret_result = self._wrap_key(
+                resolved_key_id, temp_wrapping_key_id
+            )
+            wrapped_secret_material = wrapped_secret_result.get("material", "")
+
+            if not wrapped_secret_material:
+                logger.error("No wrapped secret material returned from CTM")
+                raise Exception("No wrapped secret material returned from CTM")
+
+            logger.info(
+                f"Secret wrapped successfully, material length: {len(wrapped_secret_material)} chars"
+            )
+
+            # Step 4: Wrap the temporary wrapping key with the RSA public key
+            logger.debug("Step 4: Wrapping temporary wrapping key with RSA public key")
+            wrapped_wrapping_key_result = self._wrap_key_with_public_key(
+                temp_wrapping_key_id, wrapping_key
+            )
+            wrapped_wrapping_key_material = wrapped_wrapping_key_result.get(
+                "material", ""
+            )
+
+            if not wrapped_wrapping_key_material:
+                logger.error("No wrapped wrapping key material returned from CTM")
+                raise Exception("No wrapped wrapping key material returned from CTM")
+
+            logger.info(
+                f"Wrapping key wrapped successfully, material length: {len(wrapped_wrapping_key_material)} chars"
+            )
+
+            # Step 5: Return in the expected format
+            # Note: AES Key Wrap doesn't use IV or tag, but we include empty strings for compatibility
+
+            # To conform to all other data being Base64 encoded, the algorithm is encoded too.
+            algorithm_b64 = base64.b64encode(
+                self.key_wrap_algorithm.encode("utf-8")
+            ).decode("ascii")
+
+            result = {
+                "wrapped_key": wrapped_wrapping_key_material,  # RSA-wrapped AES wrapping key
+                "blob": wrapped_secret_material,  # AES Key Wrap encrypted secret
+                "iv": "",  # Not used in AES Key Wrap
+                "tag": "",  # Not used in AES Key Wrap
+                "algorithm": algorithm_b64,  # Indicate the wrapping algorithm used
+            }
+
+            # Log the payload
+            logger.debug("\n" + "=" * 70)
+            logger.debug("PAYLOAD (Result):")
+            logger.debug(f"wrapped_key: {result['wrapped_key']}")
+            logger.debug(f"blob: {result['blob']}")
+            logger.debug(f"iv: {result['iv']}")
+            logger.debug(f"tag: {result['tag']}")
+            logger.debug("=" * 70 + "\n")
+
+            logger.info(f"Successfully wrapped secret for key_id: {key_id}")
+            return result
+
+        finally:
+            # Step 6: Cleanup - delete the temporary wrapping key
+            if temp_wrapping_key_id:
+                try:
+                    logger.debug("Step 6: Cleaning up temporary wrapping key")
+                    self._delete_key(temp_wrapping_key_id)
+                    logger.debug("Temporary wrapping key deleted successfully")
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to delete temporary wrapping key {temp_wrapping_key_id}: {e}"
+                    )
 
     def _generate_aes_key(self, key_name: str = None) -> str:
         """Generate a random AES-256 key in Thales CTM and return the key ID"""
         if not key_name:
-            timestamp = int(time.time())
-            key_name = f"temp-AES-Key-{timestamp}"
+            # Use microsecond precision + random 32-bit hex to ensure unique names for concurrent requests
+            # This guarantees uniqueness even if multiple requests arrive in the same microsecond
+            timestamp_microseconds = int(time.time() * 1_000_000)
+            random_suffix = secrets.token_hex(4)  # 32-bit random hex (8 characters)
+            key_name = f"temp-AES-Key-{timestamp_microseconds}-{random_suffix}"
 
-        logger.info(f"Generating AES-256 key in CTM with name: {key_name}")
+        logger.debug(f"Generating AES-256 key in CTM with name: {key_name}")
 
         key_data = {
             "name": key_name,
@@ -402,7 +529,7 @@ class _CTMKBMClient:
             key_id = result.get("id")
             if not key_id:
                 raise Exception("CTM did not return a key ID")
-            logger.info(f"Successfully created AES-256 key: {key_id}")
+            logger.debug(f"Successfully created AES-256 key: {key_id}")
             return key_id
         else:
             logger.error(
@@ -412,12 +539,12 @@ class _CTMKBMClient:
 
     def _delete_key(self, key_id: str) -> bool:
         """Delete a key from Thales CTM"""
-        logger.info(f"Deleting key from CTM: {key_id}")
+        logger.debug(f"Deleting key from CTM: {key_id}")
 
         response = self._make_request("DELETE", f"vault/keys2/{key_id}")
 
         if response.status_code in (200, 204):
-            logger.info(f"Successfully deleted key: {key_id}")
+            logger.debug(f"Successfully deleted key: {key_id}")
             return True
         else:
             logger.error(
@@ -425,23 +552,86 @@ class _CTMKBMClient:
             )
             raise Exception(f"Thales CTM key deletion failed: {response.status_code}")
 
+    def _lookup_key(self, key_identifier: str) -> tuple[bool, Optional[str]]:
+        """
+        Lookup a key by ID or name via GET /vault/keys2/{key_identifier}.
+
+        Args:
+            key_identifier: Could be a key ID or key name
+
+        Returns:
+            Tuple of (success, key_id) where success is True/False
+        """
+        logger.debug(f"Looking up key: {key_identifier}")
+
+        # Attempt direct lookup by ID or name
+        response = self._make_request("GET", f"vault/keys2/{key_identifier}")
+
+        if response.status_code == 200:
+            result = response.json()
+            key_id = result.get("id", key_identifier)
+            logger.debug(f"Key lookup successful: {key_identifier} → ID: {key_id}")
+            return True, key_id
+        else:
+            logger.debug(f"Key lookup failed with status {response.status_code}")
+            return False, None
+
+    def _create_secret_key(self, key_name: str) -> tuple[bool, Optional[str]]:
+        """
+        Create a new AES-256 secret key in Thales CTM with the given name.
+
+        Args:
+            key_name: Name for the new key
+
+        Returns:
+            Tuple of (success, key_id) where success is True/False
+        """
+        logger.debug(f"Creating new AES-256 secret key in CTM with name: {key_name}")
+
+        key_data = {
+            "name": key_name,
+            "algorithm": "aes",
+            "size": 256,
+            "usageMask": 124,  # Encrypt (4) + Decrypt (8) + Wrap Key (16) + Unwrap Key (32) + Export Key (64) = 124
+            "format": "raw",
+        }
+
+        response = self._make_request("POST", "vault/keys2/", json=key_data)
+
+        if response.status_code == 201:
+            result = response.json()
+            key_id = result.get("id")
+            if not key_id:
+                logger.error("CTM did not return a key ID for newly created key")
+                return False, None
+            logger.debug(f"Successfully created secret key: {key_name} → ID: {key_id}")
+            return True, key_id
+        else:
+            logger.error(
+                f"Secret key creation failed: {response.status_code} - {response.text}"
+            )
+            return False, None
+
     def _wrap_key(self, secret_key_id: str, wrapping_key_id: str) -> Dict[str, Any]:
         """
         Wrap/export a secret key using a wrapping key with AES Key Wrap with Padding (RFC 5649)
 
         Args:
-            secret_key_id: ID of the pre-existing secret to wrap
+            secret_key_id: ID of the secret to wrap (must exist in CTM)
             wrapping_key_id: ID of the AES-256 wrapping key
 
         Returns:
             Dictionary containing the wrapped material and metadata from CTM
-        """
 
-        logger.info(
+        Raises:
+            Exception: If key wrapping operation fails
+        """
+        logger.debug(
             f"Wrapping secret {secret_key_id} with wrapping key {wrapping_key_id}"
         )
 
-        ctm_algo = self._ctm_algorithm_map.get(
+        # Prepare wrap parameters
+        ctm_algo = _CTM_ALGORITHM_MAP.get(
             self.key_wrap_algorithm, self.key_wrap_algorithm
         )
         logger.debug(
@@ -455,6 +645,8 @@ class _CTMKBMClient:
             "wrappingEncryptionAlgo": ctm_algo,
         }
 
+        # Perform the wrap operation
+        logger.debug("Performing key wrap operation")
         response = self._make_request(
             "POST", f"vault/keys2/{secret_key_id}/export", json=export_data
         )
@@ -462,7 +654,7 @@ class _CTMKBMClient:
         if response.status_code == 200:
             result = response.json()
             material = result.get("material", "")
-            logger.info(
+            logger.debug(
                 f"Successfully wrapped secret with AES Key Wrap (RFC 5649), material length: {len(material)} chars"
             )
             return result
@@ -485,7 +677,7 @@ class _CTMKBMClient:
         Returns:
             Dictionary containing the wrapped wrapping key material from CTM
         """
-        logger.info(f"Wrapping AES key {wrapping_key_id} with RSA public key")
+        logger.debug(f"Wrapping AES key {wrapping_key_id} with RSA public key")
 
         # Convert bytes to string if needed
         if isinstance(public_key_pem, bytes):
@@ -519,7 +711,7 @@ class _CTMKBMClient:
         if response.status_code == 200:
             result = response.json()
             material = result.get("material", "")
-            logger.info(
+            logger.debug(
                 f"Successfully wrapped AES key with RSA public key, material length: {len(material)} chars"
             )
             return result
@@ -532,9 +724,15 @@ class _CTMKBMClient:
             )
 
 
-def kbm_open_client_connection(config_file: str = None):
+def kbm_open_client_connection(
+    config_file: Optional[str] = None, redis_client: Optional[Any] = None
+):
     """
     Initialize the Thales CTM KBM client.
+
+    Args:
+        config_file: Path to YAML/JSON config file
+        redis_client: Optional Redis client for distributed locking (defaults to Flask app.extensions["redis"])
 
     Config file (YAML or JSON) format:
       host: "ctm-hostname.example.com"
@@ -581,6 +779,22 @@ def kbm_open_client_connection(config_file: str = None):
     if requests_timeout is not None:
         requests_timeout = int(requests_timeout)  # Ensure it's an integer
 
+    # Auto-create key options
+    create_key_if_absent = cfg.get("create_key_if_absent", False)
+
+    if create_key_if_absent:
+        if redis_client is None:
+            logger.warning(
+                "create_key_if_absent=true but no Redis client provided to kbm_open_client_connection(). "
+                "Disabling auto-key-creation. To enable, pass redis_client parameter."
+            )
+            create_key_if_absent = False
+        else:
+            logger.info(
+                "Auto-create secret keys is ENABLED (create_key_if_absent=true)"
+            )
+            logger.debug("Redis client provided for distributed key creation locking")
+
     logger.info(f"Thales CTM KBM client initialized for host: {host}")
     return _CTMKBMClient(
         host=host,
@@ -594,23 +808,24 @@ def kbm_open_client_connection(config_file: str = None):
         domain=domain,
         key_wrap_algorithm=key_wrap_algorithm,
         requests_timeout=requests_timeout,
+        create_key_if_absent=create_key_if_absent,
+        redis_client=redis_client,
     )
 
 
-def kbm_close_client_connection(kmip_client) -> None:
+def kbm_close_client_connection(ctm_client) -> None:
     """Close the Thales CTM KBM client connection"""
     logger.info("Closing Thales CTM KBM client connection")
     # No special cleanup needed for CTM client
-    return None
 
 
-def kbm_get_secret(kmip_client, key_id: str, wrapping_key: bytes):
+def kbm_get_secret(ctm_client, key_id: str, wrapping_key: bytes) -> Dict[str, str]:
     """
     Get and wrap a secret from Thales CTM.
 
     Returns dict: {"wrapped_key": b64, "blob": b64, "iv": b64, "tag": b64}
     """
-    if not isinstance(kmip_client, _CTMKBMClient):
+    if not isinstance(ctm_client, _CTMKBMClient):
         logger.error("Invalid client handle provided")
         raise ValueError("Invalid client handle")
     if not key_id:
@@ -620,7 +835,7 @@ def kbm_get_secret(kmip_client, key_id: str, wrapping_key: bytes):
         logger.error("wrapping_key is required but not provided")
         raise ValueError("wrapping_key (client RSA public key) is required")
 
-    return kmip_client.get_secret(key_id, wrapping_key)
+    return ctm_client.get_secret(key_id, wrapping_key)
 
 
 __all__ = [

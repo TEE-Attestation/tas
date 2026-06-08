@@ -6,6 +6,7 @@ This guide explains how to create, sign, and register security policies in the T
 
 - [Overview](#overview)
 - [Policy Structure](#policy-structure)
+- [Component Policies (GPU Attestation)](#component-policies-gpu-attestation)
 - [Signing Policies](#signing-policies)
 - [Registering Policies](#registering-policies)
 - [Validation Rule Types](#validation-rule-types)
@@ -79,6 +80,7 @@ Policies are stored in Redis and referenced during attestation validation to det
 |-------|------|----------|-------------|
 | `metadata` | object | Yes | Policy metadata (must include `policy_type`, `policy_id`, and `key_id`) |
 | `validation_rules` | object | Yes | Attestation validation criteria |
+| `components` | object | No | Additional attestable component policies (e.g. GPUs). See [Component Policies (GPU Attestation)](#component-policies-gpu-attestation) |
 | `signature` | object | No | Digital signature for integrity |
 
 ### Metadata Fields
@@ -119,6 +121,92 @@ The `tcb` item within `validation_rules` is a special case for TDX policies. It 
       "qe_tcb": "UpToDate"
     },
 ...
+```
+
+## Component Policies (GPU Attestation)
+
+In addition to the CPU TEE rules in `validation_rules`, a policy may carry an
+optional top-level **`components`** section that defines requirements for other
+attestable devices alongside the CPU TEE. Today this is used for **NVIDIA GPU
+attestation**.
+
+The `components` section is **optional** — existing SEV/TDX policies without it
+continue to work unchanged. When present, it is covered by the policy signature
+just like every other top-level field.
+
+### Structure
+
+`components` is keyed by component type (`gpu`). Each component type is keyed by
+the **device type** reported by the agent. NVIDIA GPUs report `gpu-nvidia`:
+
+```json
+{
+  "components": {
+    "gpu": {
+      "gpu-nvidia": {
+        "version": "4.0",
+        "authorization-rules": { ... }
+      }
+    }
+  }
+}
+```
+
+The object under `gpu-nvidia` is an **NVIDIA attestation policy** consumed by
+[`nvidia_pytools`](https://github.com/TEE-Attestation/nvidia_pytools). It
+validates the claims returned by the NVIDIA Remote Attestation Service (NRAS)
+and has two groups of rules:
+
+- **`overall-claims`** — checks applied to the overall NRAS result (e.g. the
+  attestation succeeded overall).
+- **`detached-claims`** — per-GPU checks (measurement result, debug status,
+  secure boot, driver/VBIOS RIM checks, certificate-chain status, etc.).
+
+For each claim, the actual value reported by NRAS must match the value in the
+policy. Nested objects (such as certificate-chain status) are matched field by
+field.
+
+### Example
+
+```json
+{
+  "metadata": {
+    "name": "AMD SEV-SNP + GPU Security Policy",
+    "policy_type": "SEV",
+    "policy_id": "sev-gpu-policy-001",
+    "key_id": "test-key-gpu-1",
+    "version": "1.0"
+  },
+  "validation_rules": {
+    "vmpl": { "exact_match": 0 },
+    "policy": { "debug_allowed": false, "smt_allowed": true }
+  },
+  "components": {
+    "gpu": {
+      "gpu-nvidia": {
+        "version": "4.0",
+        "authorization-rules": {
+          "type": "JWT",
+          "overall-claims": {
+            "x-nvidia-overall-att-result": true,
+            "x-nvidia-ver": "3.0"
+          },
+          "detached-claims": {
+            "measres": "success",
+            "dbgstat": "disabled",
+            "secboot": true,
+            "x-nvidia-gpu-arch-check": true,
+            "x-nvidia-gpu-attestation-report-cert-chain": {
+              "x-nvidia-cert-status": "valid",
+              "x-nvidia-cert-ocsp-status": "good"
+            }
+          }
+        }
+      }
+    }
+  },
+  "signature": { "...": "..." }
+}
 ```
 
 ## Signing Policies

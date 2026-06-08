@@ -10,6 +10,7 @@
 #
 
 import base64
+import datetime
 import hashlib
 import json
 import os
@@ -19,8 +20,34 @@ import redis
 import sev_pytools as sev
 import tdx_pytools as tdx
 from cryptography import x509
-from cryptography.hazmat.primitives import serialization
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec, padding, utils
 from flask import current_app
+
+try:
+    from tas.components.gpu_nvidia import gpu_vm_verify
+
+    GPU_ATTESTATION_AVAILABLE = True
+except ImportError:
+    GPU_ATTESTATION_AVAILABLE = False
+
+    def gpu_vm_verify(
+        gpu_tee_type,
+        gpu_evidence_b64,
+        device_index,
+        expected_nonce=None,
+        gpu_policy=None,
+    ):
+        return (
+            False,
+            None,
+            (
+                f"GPU {device_index}: GPU attestation not available "
+                "(nvidia_pytools not installed)"
+            ),
+        )
+
 
 from tas.policy_helper import is_policy_signed, verify_policy_signature
 from tas.tas_logging import get_logger, log_function_entry, log_function_exit
@@ -69,7 +96,16 @@ def sev_fetch_certs_from_redis(redis_client: redis.StrictRedis, report):
 
     redis_key_crl = f"crl:{report.chip_id}:{report.reported_tcb}"
     redis_crl = redis_client.hget(redis_key_crl, "crl")
-    if redis_crl is None:
+    if redis_crl is not None:
+        crl = x509.load_pem_x509_crl(redis_crl.encode("utf-8"))
+
+    # Refresh the CRL if the short-lived TTL key has expired or the cached CRL
+    # is past its next_update, otherwise an expired CRL would fail verification.
+    now = datetime.datetime.now(datetime.timezone.utc)
+    crl_expired = crl is None or (
+        crl.next_update_utc is not None and now > crl.next_update_utc
+    )
+    if redis_crl is None or crl_expired:
         try:
             logger.info("CRL has expired, attempting to refresh and store in Redis")
             new_crl = sev.fetch.request_crl_kds(
@@ -78,7 +114,7 @@ def sev_fetch_certs_from_redis(redis_client: redis.StrictRedis, report):
             _ = redis_client.hset(
                 redis_key_crl,
                 mapping={
-                    "crl": crl.public_bytes(serialization.Encoding.PEM),
+                    "crl": new_crl.public_bytes(serialization.Encoding.PEM),
                 },
             )
             expire = redis_client.expire(
@@ -90,8 +126,6 @@ def sev_fetch_certs_from_redis(redis_client: redis.StrictRedis, report):
             logger.warning(
                 f"WARNING: Using a CRL older than 48 hours due to error: {e}"
             )
-    else:
-        crl = x509.load_pem_x509_crl(redis_crl.encode("utf-8"))
 
     log_function_exit("sev_fetch_certs_from_redis", "certificates and CRL")
     return certs, crl
@@ -275,6 +309,20 @@ def tdx_get_collateral_from_redis(
             logger.info("Returning None to force re-fetch from Intel KDS")
             log_function_exit("tdx_get_collateral_from_redis", None)
             return None
+
+        # Force a re-fetch if either cached CRL is past its next_update,
+        # otherwise an expired CRL would fail verification instead of refreshing.
+        now = datetime.datetime.now(datetime.timezone.utc)
+        for crl_name in ("root_crl", "leaf_crl"):
+            crl = collateral[crl_name]
+            if crl.next_update_utc is not None and now > crl.next_update_utc:
+                logger.info(
+                    f"Cached TDX {crl_name} is expired (next update was "
+                    f"{crl.next_update_utc}); returning None to force re-fetch "
+                    "from Intel KDS"
+                )
+                log_function_exit("tdx_get_collateral_from_redis", None)
+                return None
 
         logger.info(f"Successfully loaded TDX collateral from Redis")
         logger.debug(f"Collateral keys loaded: {list(collateral.keys())}")
@@ -470,7 +518,7 @@ def sev_vm_verify(
     redis_client: redis.StrictRedis,
     nonce,
     decoded_evidence,
-    policy_id,
+    policy_json,
     expected_report_data=None,
 ):
     """
@@ -480,22 +528,21 @@ def sev_vm_verify(
         redis_client (redis.StrictRedis): Redis client instance for database operations.
         nonce (str): The nonce to verify.
         decoded_evidence (bytes): The decoded TEE evidence.
-        policy_id (str): The policy ID to fetch from Redis.
+        policy_json (dict): The policy JSON, already fetched and verified by the caller.
         expected_report_data (bytes, optional): Pre-computed expected report data.
             When provided, used directly for verification instead of encoding
             the nonce. Typically a SHA-512 digest from vm_verify's binding logic.
 
     Returns:
         is_verified (bool): True if verification is successful, False otherwise.
-        key_id (str or None): The key ID to fetch if the policy used for verification is successful, None otherwise.
         verify_error (str or None): An error message if verification fails, None otherwise.
     """
     log_function_entry("sev_vm_verify")
     if not nonce:
-        return False, None, "Nonce is invalid"
+        return False, "Nonce is invalid"
 
     if not decoded_evidence:
-        return False, None, "Decoded TEE evidence is empty"
+        return False, "Decoded TEE evidence is empty"
 
     report = sev.AttestationReport.unpack(decoded_evidence)
 
@@ -525,17 +572,6 @@ def sev_vm_verify(
         else:
             logger.info("Certificates saved to Redis successfully")
         certs = {"vcek": vcek, "ask": ask, "ark": ark}
-    else:
-        if crl is None:
-            logger.warning("CRL not found in Redis, fetching from AMD key server")
-            crl = x509.load_pem_x509_certificate(certs["crl"])
-
-    # Fetch policy from Redis
-    try:
-        policy_json, key_id = get_policy_from_redis(redis_client, policy_id)
-    except ValueError as e:
-        logger.error(f"Policy fetching failed for: '{policy_id}': {e}")
-        return False, None, str(e)
 
     # Use provided report_data or fall back to nonce
     if expected_report_data is not None:
@@ -559,23 +595,23 @@ def sev_vm_verify(
         if verified:
             logger.info("AMD SEV-SNP evidence verification successful")
             log_function_exit("sev_vm_verify", "success")
-            return True, key_id, None
+            return True, None
         else:
             logger.error("AMD SEV-SNP evidence verification failed")
             log_function_exit("sev_vm_verify", "failure")
-            return False, None, "Attestation verification failed"
+            return False, "Attestation verification failed"
 
     except Exception as e:
         logger.error(f"Exception during attestation verification: {e}")
         log_function_exit("sev_vm_verify", "error")
-        return False, None, f"Verification error: {str(e)}"
+        return False, f"Verification error: {str(e)}"
 
 
 def tdx_vm_verify(
     redis_client: redis.StrictRedis,
     nonce,
     decoded_evidence,
-    policy_id,
+    policy_json,
     expected_report_data=None,
 ):
     """
@@ -585,32 +621,25 @@ def tdx_vm_verify(
         redis_client (redis.StrictRedis): Redis client instance for database operations.
         nonce (str): The nonce to verify.
         decoded_evidence (bytes): The decoded TEE evidence.
-        policy_id (str): The policy ID to fetch from Redis.
+        policy_json (dict): The policy JSON, already fetched and verified by the caller.
         expected_report_data (bytes, optional): Pre-computed expected report data.
             When provided, used directly for verification instead of encoding
             the nonce. Typically a SHA-512 digest from vm_verify's binding logic.
 
     Returns:
         is_verified (bool): True if verification is successful, False otherwise.
-        key_id (str or None): The key ID to fetch if the policy used for verification is successful, None otherwise.
         verify_error (str or None): An error message if verification fails, None otherwise.
     """
     log_function_entry("tdx_vm_verify")
 
     if not nonce:
-        return False, None, "Nonce is invalid"
+        return False, "Nonce is invalid"
 
     if not decoded_evidence:
-        return False, None, "Decoded TEE evidence is empty"
+        return False, "Decoded TEE evidence is empty"
 
     quote = tdx.Quote.unpack(decoded_evidence)
 
-    # Fetch policy from Redis
-    try:
-        policy_json, key_id = get_policy_from_redis(redis_client, policy_id)
-    except ValueError as e:
-        logger.error(f"Policy fetching failed for: '{policy_id}': {e}")
-        return False, None, str(e)
     update = (
         policy_json.get("validation_rules", {}).get("tcb", {}).get("update", "standard")
     )
@@ -668,48 +697,11 @@ def tdx_vm_verify(
         verified = policy.validate_quote(quote, tcb_dict, report_data)
         logger.info("Policy validation successful for TDX quote")
         log_function_exit("tdx_vm_verify", "success")
-        return verified, key_id, None
+        return verified, None
     except Exception as e:
         logger.error(f"Policy validation failed for TDX quote: {e}")
         log_function_exit("tdx_vm_verify", "failure")
-        return False, None, "Policy validation failed for TDX quote"
-    return False, None, None
-
-
-def gpu_vm_verify(gpu_tee_type, gpu_evidence_b64, device_index):
-    """
-    Verify a single GPU's attestation evidence (stub).
-
-    Parameters:
-        gpu_tee_type (str): The type of GPU TEE (e.g., "nvidia-hopper").
-        gpu_evidence_b64 (str): Base64-encoded GPU attestation evidence.
-        device_index (int): The index of the GPU device being verified.
-
-    Returns:
-        is_verified (bool): True if verification is successful, False otherwise.
-        key_id (str or None): The key ID to fetch if the policy used for verification is successful, None otherwise.
-        verify_error (str or None): An error message if verification fails, None otherwise.
-    """
-    log_function_entry("gpu_vm_verify")
-    try:
-        gpu_raw = base64.b64decode(gpu_evidence_b64)
-        if len(gpu_raw) == 0:
-            return False, None, f"GPU {device_index}: empty evidence"
-
-        # TODO: dispatch to GPU-specific verification based on gpu_tee_type
-        logger.warning(
-            f"GPU {device_index} ({gpu_tee_type}): "
-            "verification not yet implemented, accepting on structure only"
-        )
-        log_function_exit("gpu_vm_verify", "stub-accepted")
-        return (
-            False,
-            None,
-            f"GPU {device_index} ({gpu_tee_type}): verification not yet implemented",
-        )
-    except Exception as e:
-        log_function_exit("gpu_vm_verify", "error")
-        return False, None, f"GPU {device_index} verification error: {e}"
+        return False, "Policy validation failed for TDX quote"
 
 
 def vm_verify(
@@ -720,7 +712,7 @@ def vm_verify(
     policy_id,
     wrapping_key=None,
     report_data_binding=False,
-    gpu_evidence=None,
+    gpu_list=None,
 ):
     """
     Verifies the provided nonce, TEE type, and TEE evidence, with optional
@@ -738,10 +730,10 @@ def vm_verify(
             [|| SHA-512(gpu0_evidence) || SHA-512(gpu1_evidence) || ...])
             instead of using the raw nonce. Must be provided
             in the request; cannot be None.
-        gpu_evidence (list, optional): List of per-GPU attestation evidence dicts,
+        gpu_list (list, optional): List of per-GPU attestation evidence dicts,
             each containing:
-                - "tee-type"      (str): GPU TEE type (e.g., "nvidia-hopper").
-                - "tee-evidence"  (str): Base64-encoded GPU attestation evidence.
+                - "type"      (str): GPU TEE type (e.g., "gpu-nvidia").
+                - "evidence"  (str): Base64-encoded GPU attestation evidence.
                 - "device-index"  (int): GPU device index (used for ordering).
             When present and report_data_binding is True, each GPU is verified
             independently via gpu_vm_verify and its SHA-512 evidence hash is
@@ -772,32 +764,75 @@ def vm_verify(
         logger.error("Decoded TEE evidence is empty")
         return False, None, "Decoded TEE evidence is empty"
 
+    # --- Fetch policy early for components ---
+    try:
+        policy_json, key_id = get_policy_from_redis(redis_client, policy_id)
+    except ValueError as e:
+        logger.error(f"Policy fetching failed for: '{policy_id}': {e}")
+        return False, None, str(e)
+
+    # Extract GPU component policy (if present)
+    gpu_component_policy = None
+    components = policy_json.get("components")
+    if components and isinstance(components, dict):
+        gpu_component_policy = components.get("gpu")
+
+    # Validate: if GPU policy requires GPUs but none were provided
+    if gpu_component_policy and not gpu_list:
+        logger.error("Policy requires GPU attestation but no GPU evidence provided")
+        return (
+            False,
+            None,
+            "Policy requires GPU attestation but no GPU evidence provided",
+        )
+
+    # If GPU evidence provided but no GPU policy, log warning (still verify GPUs)
+    if gpu_list and not gpu_component_policy:
+        logger.warning(
+            "GPU evidence provided but policy has no 'components.gpu' section — "
+            "GPU attestation will proceed without policy validation"
+        )
+
     # --- Compute expected report_data ---
     if report_data_binding and wrapping_key:
         # Recompute the same SHA-512 binding the agent used
         hash_input = nonce.encode("utf-8") + wrapping_key
 
-        # Phase 2: include per-GPU evidence hashes
-        if gpu_evidence:
-            if len(gpu_evidence) > 16:
-                logger.error(f"Too many GPU evidence entries: {len(gpu_evidence)}")
+        # Include per-GPU evidence hashes
+        if gpu_list:
+            if len(gpu_list) > 16:
+                logger.error(f"Too many GPU evidence entries: {len(gpu_list)}")
                 return False, None, "Too many GPU evidence entries (max 16)"
 
-            gpu_evidence_sorted = sorted(gpu_evidence, key=lambda e: e["device-index"])
+            gpu_list_sorted = sorted(gpu_list, key=lambda e: e["device-index"])
 
             # Verify each GPU and build hash chain in a single pass
             gpu_hashes = []
-            for gpu_entry in gpu_evidence_sorted:
+            for gpu_entry in gpu_list_sorted:
+                # GPU policy is keyed by device type (e.g. "gpu-nvidia")
+                gpu_type = gpu_entry.get("type", "gpu-nvidia")
+                gpu_policy_for_device = (
+                    gpu_component_policy.get(gpu_type)
+                    if isinstance(gpu_component_policy, dict)
+                    else None
+                )
+
                 gpu_ok, _, gpu_err = gpu_vm_verify(
-                    gpu_entry.get("tee-type", "unknown"),
-                    gpu_entry.get("tee-evidence", ""),
+                    gpu_type,
+                    gpu_entry.get("evidence", ""),
                     gpu_entry.get("device-index", -1),
+                    expected_nonce=nonce,
+                    gpu_policy=gpu_policy_for_device,
                 )
                 if not gpu_ok:
                     return False, None, gpu_err
 
-                gpu_raw = base64.b64decode(gpu_entry["tee-evidence"])
-                gpu_hashes.append(hashlib.sha512(gpu_raw).digest())
+                # Hash the inner raw evidence (the binary GPU attestation report).
+                # Decode outer base64 → JSON envelope → decode inner "evidence" → raw bytes.
+                gpu_envelope_raw = base64.b64decode(gpu_entry["evidence"])
+                gpu_envelope = json.loads(gpu_envelope_raw)
+                inner_evidence_raw = base64.b64decode(gpu_envelope["evidence"])
+                gpu_hashes.append(hashlib.sha512(inner_evidence_raw).digest())
 
             # Append SHA-512 hashes: SHA512(gpu0_raw) || SHA512(gpu1_raw) || ...
             for h in gpu_hashes:
@@ -810,24 +845,25 @@ def vm_verify(
     logger.info(f"Verifying evidence for TEE type: {tee_type}")
 
     if tee_type == "amd-sev-snp":
-        result = sev_vm_verify(
+        verified, verify_error = sev_vm_verify(
             redis_client,
             nonce,
             decoded_evidence,
-            policy_id,
+            policy_json,
             expected_report_data=expected_report_data,
         )
     elif tee_type == "intel-tdx":
-        result = tdx_vm_verify(
+        verified, verify_error = tdx_vm_verify(
             redis_client,
             nonce,
             decoded_evidence,
-            policy_id,
+            policy_json,
             expected_report_data=expected_report_data,
         )
     else:
         logger.error(f"Unsupported TEE type: {tee_type}")
         return False, None, "Unsupported TEE type"
 
+    result = (verified, key_id if verified else None, verify_error)
     log_function_exit("vm_verify", result)
     return result
