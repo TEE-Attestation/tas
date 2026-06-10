@@ -117,8 +117,9 @@ def get_secret():
 
     logger.debug(f"Received report data binding: {report_data_binding}")
 
-    # Optional GPU evidence for Phase 2 - if provided, it will be passed to the vm_verify function
-    gpu_evidence = data.get("gpu-evidence", None)  # Phase 2
+    # Optional component evidence
+    component_evidence = data.get("component-evidence", None)
+    gpu_list = component_evidence.get("gpu", None) if component_evidence else None
 
     # Get client's wrapping key (RSA public key) from the request
     # The public key is expected to be in base64 format
@@ -155,7 +156,7 @@ def get_secret():
         policy_id,
         wrapping_key=wrapping_key,
         report_data_binding=report_data_binding,
-        gpu_evidence=gpu_evidence,  # NEW (for Phase 2)
+        gpu_list=gpu_list,
     )
     if not is_verified:
         logger.error(f"TEE verification failed: {verify_error}")

@@ -10,6 +10,7 @@
 #
 
 import base64
+import datetime
 import hashlib
 import json
 import os
@@ -19,8 +20,30 @@ import redis
 import sev_pytools as sev
 import tdx_pytools as tdx
 from cryptography import x509
-from cryptography.hazmat.primitives import serialization
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec, padding, utils
 from flask import current_app
+
+try:
+    from tas.components.gpu_nvidia import gpu_vm_verify
+
+    GPU_ATTESTATION_AVAILABLE = True
+except ImportError:
+    GPU_ATTESTATION_AVAILABLE = False
+
+    def gpu_vm_verify(
+        gpu_tee_type, gpu_evidence_b64, device_index, expected_nonce=None
+    ):
+        return (
+            False,
+            None,
+            (
+                f"GPU {device_index}: GPU attestation not available "
+                "(nvidia_pytools not installed)"
+            ),
+        )
+
 
 from tas.policy_helper import is_policy_signed, verify_policy_signature
 from tas.tas_logging import get_logger, log_function_entry, log_function_exit
@@ -676,42 +699,6 @@ def tdx_vm_verify(
     return False, None, None
 
 
-def gpu_vm_verify(gpu_tee_type, gpu_evidence_b64, device_index):
-    """
-    Verify a single GPU's attestation evidence (stub).
-
-    Parameters:
-        gpu_tee_type (str): The type of GPU TEE (e.g., "nvidia-hopper").
-        gpu_evidence_b64 (str): Base64-encoded GPU attestation evidence.
-        device_index (int): The index of the GPU device being verified.
-
-    Returns:
-        is_verified (bool): True if verification is successful, False otherwise.
-        key_id (str or None): The key ID to fetch if the policy used for verification is successful, None otherwise.
-        verify_error (str or None): An error message if verification fails, None otherwise.
-    """
-    log_function_entry("gpu_vm_verify")
-    try:
-        gpu_raw = base64.b64decode(gpu_evidence_b64)
-        if len(gpu_raw) == 0:
-            return False, None, f"GPU {device_index}: empty evidence"
-
-        # TODO: dispatch to GPU-specific verification based on gpu_tee_type
-        logger.warning(
-            f"GPU {device_index} ({gpu_tee_type}): "
-            "verification not yet implemented, accepting on structure only"
-        )
-        log_function_exit("gpu_vm_verify", "stub-accepted")
-        return (
-            False,
-            None,
-            f"GPU {device_index} ({gpu_tee_type}): verification not yet implemented",
-        )
-    except Exception as e:
-        log_function_exit("gpu_vm_verify", "error")
-        return False, None, f"GPU {device_index} verification error: {e}"
-
-
 def vm_verify(
     redis_client,
     nonce,
@@ -720,7 +707,7 @@ def vm_verify(
     policy_id,
     wrapping_key=None,
     report_data_binding=False,
-    gpu_evidence=None,
+    gpu_list=None,
 ):
     """
     Verifies the provided nonce, TEE type, and TEE evidence, with optional
@@ -738,10 +725,10 @@ def vm_verify(
             [|| SHA-512(gpu0_evidence) || SHA-512(gpu1_evidence) || ...])
             instead of using the raw nonce. Must be provided
             in the request; cannot be None.
-        gpu_evidence (list, optional): List of per-GPU attestation evidence dicts,
+        gpu_list (list, optional): List of per-GPU attestation evidence dicts,
             each containing:
-                - "tee-type"      (str): GPU TEE type (e.g., "nvidia-hopper").
-                - "tee-evidence"  (str): Base64-encoded GPU attestation evidence.
+                - "type"      (str): GPU TEE type (e.g., "gpu-nvidia").
+                - "evidence"  (str): Base64-encoded GPU attestation evidence.
                 - "device-index"  (int): GPU device index (used for ordering).
             When present and report_data_binding is True, each GPU is verified
             independently via gpu_vm_verify and its SHA-512 evidence hash is
@@ -777,27 +764,32 @@ def vm_verify(
         # Recompute the same SHA-512 binding the agent used
         hash_input = nonce.encode("utf-8") + wrapping_key
 
-        # Phase 2: include per-GPU evidence hashes
-        if gpu_evidence:
-            if len(gpu_evidence) > 16:
-                logger.error(f"Too many GPU evidence entries: {len(gpu_evidence)}")
+        # Include per-GPU evidence hashes
+        if gpu_list:
+            if len(gpu_list) > 16:
+                logger.error(f"Too many GPU evidence entries: {len(gpu_list)}")
                 return False, None, "Too many GPU evidence entries (max 16)"
 
-            gpu_evidence_sorted = sorted(gpu_evidence, key=lambda e: e["device-index"])
+            gpu_list_sorted = sorted(gpu_list, key=lambda e: e["device-index"])
 
             # Verify each GPU and build hash chain in a single pass
             gpu_hashes = []
-            for gpu_entry in gpu_evidence_sorted:
+            for gpu_entry in gpu_list_sorted:
                 gpu_ok, _, gpu_err = gpu_vm_verify(
-                    gpu_entry.get("tee-type", "unknown"),
-                    gpu_entry.get("tee-evidence", ""),
+                    gpu_entry.get("type", "unknown"),
+                    gpu_entry.get("evidence", ""),
                     gpu_entry.get("device-index", -1),
+                    expected_nonce=nonce,
                 )
                 if not gpu_ok:
                     return False, None, gpu_err
 
-                gpu_raw = base64.b64decode(gpu_entry["tee-evidence"])
-                gpu_hashes.append(hashlib.sha512(gpu_raw).digest())
+                # Hash the inner raw evidence (the binary GPU attestation report).
+                # Decode outer base64 → JSON envelope → decode inner "evidence" → raw bytes.
+                gpu_envelope_raw = base64.b64decode(gpu_entry["evidence"])
+                gpu_envelope = json.loads(gpu_envelope_raw)
+                inner_evidence_raw = base64.b64decode(gpu_envelope["evidence"])
+                gpu_hashes.append(hashlib.sha512(inner_evidence_raw).digest())
 
             # Append SHA-512 hashes: SHA512(gpu0_raw) || SHA512(gpu1_raw) || ...
             for h in gpu_hashes:
