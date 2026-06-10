@@ -15,6 +15,7 @@ Logging utilities for TAS (Trusted Attestation Service)
 This module provides centralized logging configuration for both library and CLI usage.
 """
 
+import copy
 import logging
 import sys
 from typing import Optional, Union
@@ -34,7 +35,8 @@ class ColoredFormatter(logging.Formatter):
     }
 
     def format(self, record):
-        # Apply color to the log level name
+        # Apply color to the log level name (on a copy to avoid polluting other handlers)
+        record = copy.copy(record)
         if record.levelname in self.COLORS:
             record.levelname = f"{self.COLORS[record.levelname]}{record.levelname}{self.COLORS['RESET']}"
         return super().format(record)
@@ -131,56 +133,31 @@ def get_logger(name: str = "tas") -> logging.Logger:
     return logging.getLogger(name)
 
 
-def configure_sev_pytools_logging():
-    """Configure sev_pytools logging to use TAS logging settings."""
-    # Create sev_pytools logger as child of tas for inheritance
-    sev_logger = logging.getLogger("tas.sev_pytools")
+def configure_pytools_logging(name: str):
+    """Configure a pytools library's logging to use TAS logging settings."""
+    tas_logger = logging.getLogger(f"tas.{name}")
 
-    # Configure the direct sev_pytools logger to forward to our tas.sev_pytools
-    direct_sev_logger = logging.getLogger("sev_pytools")
-    direct_sev_logger.handlers.clear()
-    direct_sev_logger.propagate = False
-    direct_sev_logger.setLevel(logging.DEBUG)
+    direct_logger = logging.getLogger(name)
+    direct_logger.handlers.clear()
+    direct_logger.propagate = False
+    direct_logger.setLevel(logging.DEBUG)
 
-    # Create handler that forwards messages to our tas.sev_pytools logger
     class TASForwardingHandler(logging.Handler):
         def emit(self, record):
-            sev_logger.handle(record)
+            tas_logger.handle(record)
 
     forwarding_handler = TASForwardingHandler()
     forwarding_handler.setLevel(logging.DEBUG)
-    direct_sev_logger.addHandler(forwarding_handler)
+    direct_logger.addHandler(forwarding_handler)
 
-    logger.debug("Configured sev_pytools logging to inherit TAS settings")
-
-
-def configure_tdx_pytools_logging():
-    """Configure tdx_pytools logging to use TAS logging settings."""
-    # Create tdx_pytools logger as child of tas for inheritance
-    tdx_logger = logging.getLogger("tas.tdx_pytools")
-
-    # Configure the direct tdx_pytools logger to forward to our tas.tdx_pytools
-    direct_tdx_logger = logging.getLogger("tdx_pytools")
-    direct_tdx_logger.handlers.clear()
-    direct_tdx_logger.propagate = False
-    direct_tdx_logger.setLevel(logging.DEBUG)
-
-    # Create handler that forwards messages to our tas.tdx_pytools logger
-    class TASForwardingHandler(logging.Handler):
-        def emit(self, record):
-            tdx_logger.handle(record)
-
-    forwarding_handler = TASForwardingHandler()
-    forwarding_handler.setLevel(logging.DEBUG)
-    direct_tdx_logger.addHandler(forwarding_handler)
-
-    logger.debug("Configured tdx_pytools logging to inherit TAS settings")
+    logger.debug(f"Configured {name} logging to inherit TAS settings")
 
 
 def configure_external_logging():
     """Reconfigure external library logging to reflect TAS logging changes."""
-    configure_sev_pytools_logging()
-    configure_tdx_pytools_logging()
+    configure_pytools_logging("sev_pytools")
+    configure_pytools_logging("tdx_pytools")
+    configure_pytools_logging("nvidia_pytools")
 
 
 # At the moment these functions are called from logger in the logs rather than their parent

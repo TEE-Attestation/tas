@@ -49,7 +49,7 @@ if log_config:
     log_file = log_config.get("file", None)
     verbose = log_config.get("verbose", False)
     quiet = log_config.get("quiet", False)
-    cli = log_config.get("cli", False)
+    cli = log_config.get("cli", True)
 
     # Reconfigure the root "tas" logger with settings from config
     logger = setup_logging(
