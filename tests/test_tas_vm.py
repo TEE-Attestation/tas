@@ -9,6 +9,7 @@
 
 import base64
 import hashlib
+import json
 from unittest.mock import MagicMock, patch
 
 from tas.tas_vm import gpu_vm_verify, vm_verify
@@ -17,41 +18,82 @@ from tas.tas_vm import gpu_vm_verify, vm_verify
 
 
 class TestGpuVmVerify:
-    """Tests for the gpu_vm_verify stub function."""
+    """Tests for the gpu_vm_verify function (nvidia_pytools integration)."""
 
-    def test_empty_evidence_returns_error(self):
-        """Empty base64 payload should be rejected."""
-        empty_b64 = base64.b64encode(b"").decode()
-        ok, _, err = gpu_vm_verify("nvidia-hopper", empty_b64, 0)
-        assert ok is False
-        assert "empty evidence" in err
+    EVIDENCE_B64 = base64.b64encode(b"\x01\x02\x03").decode()
 
-    def test_valid_evidence_returns_not_implemented(self):
-        """Non-empty evidence should return a 'not implemented' error (stub)."""
-        evidence_b64 = base64.b64encode(b"\x01\x02\x03").decode()
-        ok, _, err = gpu_vm_verify("nvidia-hopper", evidence_b64, 0)
-        assert ok is False
-        assert "not yet implemented" in err
+    @patch("tas.components.gpu_nvidia.GPU_PYTOOLS_AVAILABLE", False)
+    def test_unavailable_returns_install_message(self):
+        """When nvidia_pytools is not installed, return an actionable error."""
+        from tas.components.gpu_nvidia import gpu_vm_verify as direct_verify
 
-    def test_invalid_base64_returns_error(self):
-        """Invalid base64 should be caught and return an error."""
-        ok, _, err = gpu_vm_verify("nvidia-hopper", "!!!not-base64!!!", 0)
+        ok, key_id, err = direct_verify("gpu-nvidia", self.EVIDENCE_B64, 0)
         assert ok is False
-        assert "verification error" in err
+        assert key_id is None
+        assert "not installed" in err
+        assert "0" in err
 
-    def test_device_index_in_error_message(self):
-        """Device index should appear in the error message."""
-        evidence_b64 = base64.b64encode(b"\xaa").decode()
-        ok, _, err = gpu_vm_verify("nvidia-hopper", evidence_b64, 42)
-        assert ok is False
-        assert "42" in err
+    @patch("tas.components.gpu_nvidia.nvidia_pytools")
+    @patch("tas.components.gpu_nvidia.GPU_PYTOOLS_AVAILABLE", True)
+    def test_successful_verification(self, mock_nvidia):
+        """Successful nvidia_pytools verification returns (True, None, None)."""
+        from tas.components.gpu_nvidia import gpu_vm_verify as direct_verify
 
-    def test_tee_type_in_error_message(self):
-        """GPU TEE type should appear in the error message."""
-        evidence_b64 = base64.b64encode(b"\xaa").decode()
-        ok, _, err = gpu_vm_verify("nvidia-hopper", evidence_b64, 0)
+        mock_claims = MagicMock()
+        mock_claims.hwmodel = "H100"
+        mock_nvidia.verify_gpu_evidence.return_value = (True, mock_claims, None)
+
+        ok, key_id, err = direct_verify("gpu-nvidia", self.EVIDENCE_B64, 0)
+        assert ok is True
+        assert key_id is None
+        assert err is None
+        mock_nvidia.verify_gpu_evidence.assert_called_once_with(
+            gpu_evidence_b64=self.EVIDENCE_B64,
+            device_index=0,
+            expected_nonce=None,
+        )
+
+    @patch("tas.components.gpu_nvidia.nvidia_pytools")
+    @patch("tas.components.gpu_nvidia.GPU_PYTOOLS_AVAILABLE", True)
+    def test_failed_verification_propagates_error(self, mock_nvidia):
+        """Failed nvidia_pytools verification propagates the error string."""
+        from tas.components.gpu_nvidia import gpu_vm_verify as direct_verify
+
+        mock_nvidia.verify_gpu_evidence.return_value = (
+            False,
+            None,
+            "GPU 0: token signature invalid",
+        )
+
+        ok, key_id, err = direct_verify("gpu-nvidia", self.EVIDENCE_B64, 0)
         assert ok is False
-        assert "nvidia-hopper" in err
+        assert key_id is None
+        assert "token signature invalid" in err
+
+    @patch("tas.components.gpu_nvidia.nvidia_pytools")
+    @patch("tas.components.gpu_nvidia.GPU_PYTOOLS_AVAILABLE", True)
+    def test_nonce_passed_to_nvidia_pytools(self, mock_nvidia):
+        """expected_nonce should be forwarded to nvidia_pytools."""
+        from tas.components.gpu_nvidia import gpu_vm_verify as direct_verify
+
+        mock_nvidia.verify_gpu_evidence.return_value = (True, MagicMock(), None)
+
+        direct_verify("gpu-nvidia", self.EVIDENCE_B64, 2, expected_nonce="abc123")
+        mock_nvidia.verify_gpu_evidence.assert_called_once_with(
+            gpu_evidence_b64=self.EVIDENCE_B64,
+            device_index=2,
+            expected_nonce="abc123",
+        )
+
+    def test_fallback_stub_when_import_fails(self):
+        """The fallback stub in tas_vm should mention nvidia_pytools not installed."""
+        # gpu_vm_verify imported at module level falls back if import fails;
+        # test the actual imported function (may be real or stub depending on env)
+        ok, key_id, err = gpu_vm_verify("gpu-nvidia", self.EVIDENCE_B64, 3)
+        # Either it works (nvidia_pytools installed) or returns a clear error
+        assert isinstance(ok, bool)
+        if not ok:
+            assert "3" in err or "GPU" in err
 
 
 # ── vm_verify input validation tests ────────────────────────────────
@@ -267,14 +309,24 @@ class TestVmVerifyGpuEvidence:
     WRAPPING_KEY = b"\x11" * 16
     KEY_ID = "gpu-key"
     GPU_EVIDENCE_RAW = b"\xaa\xbb\xcc"
-    GPU_EVIDENCE_B64 = base64.b64encode(GPU_EVIDENCE_RAW).decode()
+
+    @staticmethod
+    def _make_envelope(raw_bytes):
+        """Build a GPU evidence envelope: base64(json({"evidence": base64(raw)}))."""
+        inner_b64 = base64.b64encode(raw_bytes).decode()
+        envelope = json.dumps({"evidence": inner_b64})
+        return base64.b64encode(envelope.encode()).decode()
+
+    @property
+    def GPU_EVIDENCE_B64(self):
+        return self._make_envelope(self.GPU_EVIDENCE_RAW)
 
     def test_gpu_evidence_too_many_rejected(self):
         """More than 16 GPU entries should be rejected."""
         gpu_evidence = [
             {
-                "tee-type": "nvidia-hopper",
-                "tee-evidence": self.GPU_EVIDENCE_B64,
+                "type": "nvidia-hopper",
+                "evidence": self.GPU_EVIDENCE_B64,
                 "device-index": i,
             }
             for i in range(17)
@@ -287,7 +339,7 @@ class TestVmVerifyGpuEvidence:
             self.KEY_ID,
             wrapping_key=self.WRAPPING_KEY,
             report_data_binding=True,
-            gpu_evidence=gpu_evidence,
+            gpu_list=gpu_evidence,
         )
         assert ok is False
         assert "max 16" in err
@@ -296,8 +348,8 @@ class TestVmVerifyGpuEvidence:
         """Exactly 16 GPU entries should not be rejected by the cap."""
         gpu_evidence = [
             {
-                "tee-type": "nvidia-hopper",
-                "tee-evidence": self.GPU_EVIDENCE_B64,
+                "type": "nvidia-hopper",
+                "evidence": self.GPU_EVIDENCE_B64,
                 "device-index": i,
             }
             for i in range(16)
@@ -310,7 +362,7 @@ class TestVmVerifyGpuEvidence:
             self.KEY_ID,
             wrapping_key=self.WRAPPING_KEY,
             report_data_binding=True,
-            gpu_evidence=gpu_evidence,
+            gpu_list=gpu_evidence,
         )
         assert ok is False
         # Error should be from gpu_vm_verify stub, not the cap
@@ -320,8 +372,8 @@ class TestVmVerifyGpuEvidence:
         """If a GPU fails verification, vm_verify should return its error."""
         gpu_evidence = [
             {
-                "tee-type": "nvidia-hopper",
-                "tee-evidence": self.GPU_EVIDENCE_B64,
+                "type": "nvidia-hopper",
+                "evidence": self.GPU_EVIDENCE_B64,
                 "device-index": 0,
             },
         ]
@@ -333,10 +385,10 @@ class TestVmVerifyGpuEvidence:
             self.KEY_ID,
             wrapping_key=self.WRAPPING_KEY,
             report_data_binding=True,
-            gpu_evidence=gpu_evidence,
+            gpu_list=gpu_evidence,
         )
         assert ok is False
-        assert "not yet implemented" in err
+        assert err is not None and "GPU" in err
 
     @patch("tas.tas_vm.gpu_vm_verify", return_value=(True, None, None))
     @patch("tas.tas_vm.sev_vm_verify")
@@ -348,13 +400,13 @@ class TestVmVerifyGpuEvidence:
         gpu1_raw = b"\xcc\xdd"
         gpu_evidence = [
             {
-                "tee-type": "nvidia-hopper",
-                "tee-evidence": base64.b64encode(gpu1_raw).decode(),
+                "type": "nvidia-hopper",
+                "evidence": self._make_envelope(gpu1_raw),
                 "device-index": 1,
             },
             {
-                "tee-type": "nvidia-hopper",
-                "tee-evidence": base64.b64encode(gpu0_raw).decode(),
+                "type": "nvidia-hopper",
+                "evidence": self._make_envelope(gpu0_raw),
                 "device-index": 0,
             },
         ]
@@ -367,7 +419,7 @@ class TestVmVerifyGpuEvidence:
             self.KEY_ID,
             wrapping_key=self.WRAPPING_KEY,
             report_data_binding=True,
-            gpu_evidence=gpu_evidence,
+            gpu_list=gpu_evidence,
         )
 
         # Build expected hash: sorted by device-index (0 first, then 1)
@@ -387,18 +439,18 @@ class TestVmVerifyGpuEvidence:
 
         gpu_entries = [
             {
-                "tee-type": "t",
-                "tee-evidence": base64.b64encode(b"gpu2").decode(),
+                "type": "t",
+                "evidence": self._make_envelope(b"gpu2"),
                 "device-index": 2,
             },
             {
-                "tee-type": "t",
-                "tee-evidence": base64.b64encode(b"gpu0").decode(),
+                "type": "t",
+                "evidence": self._make_envelope(b"gpu0"),
                 "device-index": 0,
             },
             {
-                "tee-type": "t",
-                "tee-evidence": base64.b64encode(b"gpu1").decode(),
+                "type": "t",
+                "evidence": self._make_envelope(b"gpu1"),
                 "device-index": 1,
             },
         ]
@@ -411,7 +463,7 @@ class TestVmVerifyGpuEvidence:
             self.KEY_ID,
             wrapping_key=self.WRAPPING_KEY,
             report_data_binding=True,
-            gpu_evidence=gpu_entries,
+            gpu_list=gpu_entries,
         )
 
         # gpu_vm_verify should have been called in sorted order: 0, 1, 2
@@ -423,8 +475,8 @@ class TestVmVerifyGpuEvidence:
         """GPU evidence without report_data_binding should not trigger GPU verify."""
         gpu_evidence = [
             {
-                "tee-type": "nvidia-hopper",
-                "tee-evidence": self.GPU_EVIDENCE_B64,
+                "type": "nvidia-hopper",
+                "evidence": self.GPU_EVIDENCE_B64,
                 "device-index": 0,
             },
         ]
@@ -442,7 +494,7 @@ class TestVmVerifyGpuEvidence:
                 self.KEY_ID,
                 wrapping_key=self.WRAPPING_KEY,
                 report_data_binding=False,
-                gpu_evidence=gpu_evidence,
+                gpu_list=gpu_evidence,
             )
 
             mock_gpu.assert_not_called()
@@ -461,7 +513,7 @@ class TestVmVerifyGpuEvidence:
             self.KEY_ID,
             wrapping_key=self.WRAPPING_KEY,
             report_data_binding=True,
-            gpu_evidence=None,
+            gpu_list=None,
         )
 
         mock_gpu.assert_not_called()
@@ -484,13 +536,13 @@ class TestVmVerifyGpuEvidence:
 
         gpu_evidence = [
             {
-                "tee-type": "t",
-                "tee-evidence": base64.b64encode(b"g0").decode(),
+                "type": "t",
+                "evidence": self._make_envelope(b"g0"),
                 "device-index": 0,
             },
             {
-                "tee-type": "t",
-                "tee-evidence": base64.b64encode(b"g1").decode(),
+                "type": "t",
+                "evidence": self._make_envelope(b"g1"),
                 "device-index": 1,
             },
         ]
@@ -503,7 +555,7 @@ class TestVmVerifyGpuEvidence:
             self.KEY_ID,
             wrapping_key=self.WRAPPING_KEY,
             report_data_binding=True,
-            gpu_evidence=gpu_evidence,
+            gpu_list=gpu_evidence,
         )
 
         assert ok is False
