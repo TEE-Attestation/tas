@@ -46,6 +46,21 @@ class BaseConfig:
     TAS_KBM_CONFIG_FILE = "./config/kbm_mock_config.yaml"
     TAS_KBM_PLUGIN = "tas_kbm_mock"
     TAS_EXTRA_PLUGIN_DIR = None
+    # Certificate issuance feature toggle. Disabled by default until the
+    # certificate flow is production-ready. When False, the /alphav1/certify
+    # route is not registered and the cert provider plugin is not initialized.
+    TAS_CERT_ENABLED = False
+    TAS_CERT_PLUGIN = "tas_cert_local"
+    TAS_CERT_PLUGIN_PREFIX = "tas_cert"
+    TAS_CERT_CONFIG_FILE = "./config/cert_local_config.yaml"
+    TAS_CERT_VALIDITY_SECONDS = 300
+    TAS_CERT_CLOCK_SKEW_SECONDS = 90
+    TAS_CERT_TRUST_DOMAIN = "example.org"
+    TAS_CERT_MAX_CSR_BYTES = 10000
+    TAS_CERT_EVIDENCE_DIGEST_MAX_ENTRIES = 17
+    TAS_CERT_EVIDENCE_DIGEST_MAX_BYTES = 4096
+    TAS_CERT_ALLOWED_KEY_TYPES = ["RSA", "EC"]
+    TAS_OID_ROOT = "1.3.6.1.4.1.65993"
 
     # Rate limiting (Flask-Limiter native keys)
     RATELIMIT_ENABLED = True

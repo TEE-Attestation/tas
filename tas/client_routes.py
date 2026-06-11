@@ -40,6 +40,9 @@ def get_nonce_redis():
     )
 
 
+# Nonce route  for experiemtal cerftificate flow, make it cler that is not for production use
+# Currently using get_nonce but that may change in the future.
+@client_bp.route("/alphav1/nonce", methods=["GET"])
 @client_bp.route("/kb/v0/get_nonce", methods=["GET"])
 def get_nonce():
     logger.info(f"Received nonce request from {request.remote_addr}")

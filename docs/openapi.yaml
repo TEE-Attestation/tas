@@ -536,3 +536,75 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+  /alphav1/nonce:
+    get:
+      tags:
+      - Certificate
+      summary: Generate a single-use nonce for attestation binding
+      security:
+      - ApiKeyAuth: []
+      responses:
+        '200':
+          description: Nonce successfully generated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  nonce:
+                    type: string
+  /alphav1/certify:
+    post:
+      tags:
+      - Certificate
+      summary: Issue or renew an X.509 certificate based on verified TEE attestation
+      security:
+      - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - tee-type
+              - nonce
+              - tee-evidence
+              - csr
+              - policy-domain
+              properties:
+                tee-type:
+                  type: string
+                nonce:
+                  type: string
+                tee-evidence:
+                  type: string
+                  format: base64
+                csr:
+                  type: string
+                  format: base64
+                policy-domain:
+                  type: string
+                gpu-evidence:
+                  type: array
+                renew_cert:
+                  type: string
+                  description: PEM-encoded prior certificate for renewal. When provided,
+                    the response certificate will reuse the prior SPIFFE UUID if validation
+                    succeeds
+      responses:
+        '201':
+          description: Certificate successfully issued
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  certificate:
+                    type: string
+                  ca_chain:
+                    type: array
+                    items:
+                      type: string
+      description: Issues a new certificate or renews an existing one by reusing its
+        SPIFFE UUID, provided fresh attestation is verified

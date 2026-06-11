@@ -1,7 +1,9 @@
 
 
-# Do  not track sev_pytools
+# Do  not track TAS tools
 sev_pytools/
+tdx_pytools/
+nvidia_pytools/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -196,3 +198,4 @@ tas.log
 
 #VS Code settings
 .vscode/
+.github/copilot-instructions.md

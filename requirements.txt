@@ -8,3 +8,4 @@ redis>=4.0.0
 hexdump>=3.0
 PyYAML>=5.4.0
 pytest>=6.0.0
+asn1crypto>=1.5.1,<2.0
