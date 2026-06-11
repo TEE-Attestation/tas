@@ -114,11 +114,14 @@ if not TAS_API_KEY:
 # Plugin discovery: respect prefix defined in the configuration
 # This allows for dynamic loading of plugins that follow the
 # naming convention defined in plugin_prefix.
-plugin_prefix = app.config["TAS_PLUGIN_PREFIX"]
+plugin_prefixes = [
+    app.config.get("TAS_PLUGIN_PREFIX", "tas_kbm"),
+    app.config.get("TAS_CERT_PLUGIN_PREFIX", "tas_cert"),
+]
 discovered_plugins = {
     name: importlib.import_module(name)
     for finder, name, ispkg in pkgutil.iter_modules()
-    if name.startswith(plugin_prefix)
+    if any(name.startswith(p) for p in plugin_prefixes)
 }
 
 # Initialize Redis client
@@ -216,6 +219,16 @@ else:
 app.register_blueprint(management_bp)
 app.register_blueprint(client_bp)
 
+# Certificate issuance is gated behind a feature flag and disabled by default
+# until the flow is production-ready.
+cert_enabled = app.config.get("TAS_CERT_ENABLED", False)
+if cert_enabled:
+    from tas.cert.routes import cert_bp
+
+    app.register_blueprint(cert_bp)
+else:
+    logger.info("Certificate issuance disabled by TAS_CERT_ENABLED=false")
+
 # Rate limiting storage resolution
 _rl_storage_uri, _rl_storage_options, _rl_mode = resolve_ratelimit_storage(
     app.config, redis_client
@@ -232,6 +245,8 @@ if app.config.get("TAS_TRUST_X_FORWARDED_FOR"):
 
 # Apply rate limit to all client blueprint routes
 limiter = setup_rate_limiter(app, client_bp, _rl_storage_uri, _rl_storage_options)
+if cert_enabled:
+    limiter.limit(app.config.get("TAS_CLIENT_RATE_LIMIT", "200 per minute"))(cert_bp)
 
 
 # log discovered plugins for debugging
@@ -274,6 +289,46 @@ except Exception as e:
     logger.error(f"Failed to initialize KBM client: {e}")
     raise RuntimeError(f"Failed to open KBM client connection: {e}")
 
+# Initialize Cert plugin
+if cert_enabled:
+    tas_cert_plugin = None
+    for plugin_name in discovered_plugins:
+        if plugin_name == app.config["TAS_CERT_PLUGIN"]:
+            tas_cert_plugin = discovered_plugins[plugin_name]
+    if not tas_cert_plugin:
+        raise RuntimeError("tas_cert plugin not found in discovered plugins")
+
+    cert_required_funcs = [
+        "cert_get_ca_info",
+        "cert_sign",
+        "cert_open_client_connection",
+        "cert_close_client_connection",
+    ]
+    for func in cert_required_funcs:
+        if not hasattr(tas_cert_plugin, func):
+            raise RuntimeError(
+                f"Required function '{func}' not found in tas_cert plugin"
+            )
+
+    logger.info("Initializing Cert Provider client connection")
+    try:
+        cert_client = tas_cert_plugin.cert_open_client_connection(
+            config_file=app.config.get("TAS_CERT_CONFIG_FILE"),
+            trust_domain=app.config.get("TAS_CERT_TRUST_DOMAIN"),
+        )
+        logger.info("Cert Provider client connection established successfully")
+        app.extensions["cert_client"] = cert_client
+        app.extensions["cert_sign"] = tas_cert_plugin.cert_sign
+        app.extensions["cert_get_ca_info"] = tas_cert_plugin.cert_get_ca_info
+        app.extensions["cert_close_client_connection"] = (
+            tas_cert_plugin.cert_close_client_connection
+        )
+    except Exception as e:
+        logger.error(f"Failed to initialize Cert Provider client: {e}")
+        raise RuntimeError(f"Failed to open Cert Provider client connection: {e}")
+else:
+    logger.info("Skipping Cert Provider initialization (TAS_CERT_ENABLED=false)")
+
 if __name__ == "__main__":
     # Note: This is a simplified example and should not be used in production
     # without proper security measures such as HTTPS, etc.
@@ -298,3 +353,13 @@ if __name__ == "__main__":
             logger.info("KMIP client connection closed.")
         except Exception as e:
             logger.error(f"Error closing KMIP client connection: {e}")
+
+        # Ensure the cert provider client connection is closed when the application exits
+        if app.extensions.get("cert_close_client_connection"):
+            try:
+                app.extensions["cert_close_client_connection"](
+                    app.extensions["cert_client"]
+                )
+                logger.info("Cert provider client connection closed.")
+            except Exception as e:
+                logger.error(f"Error closing cert provider client connection: {e}")

@@ -1,0 +1,4 @@
+# DEV/TEST ONLY configuration for tas_cert_local plugin
+# Do NOT use this generated CA in production!
+key_type: "EC"
+key_size: 384

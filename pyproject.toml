@@ -20,3 +20,10 @@ addopts = [
 
 
 [project.optional-dependencies]
+# Development/test-only dependencies. Install with: pip install -e ".[dev]"
+# `spiffe` (py-spiffe, maintained by HPE) is used purely as a test oracle to
+# independently validate that issued leaf certificates are well-formed
+# X509-SVIDs. It is NOT a runtime dependency of the service.
+dev = [
+    "spiffe>=0.3,<0.4",
+]

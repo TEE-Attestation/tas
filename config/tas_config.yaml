@@ -37,6 +37,9 @@ SERVER_PORT: 5000
 TAS_POLICY_TRUST: "./certs/policy"
 TAS_ENFORCE_SIGNED_POLICIES: true
 
+# Certificate issuance feature (disabled by default until production-ready)
+#TAS_CERT_ENABLED: false
+
 # Optional nested settings (available under app.config['TAS'])
 TAS:
   limits:
