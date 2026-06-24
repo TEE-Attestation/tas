@@ -23,7 +23,9 @@ except ImportError:
     )
 
 
-def gpu_vm_verify(gpu_tee_type, gpu_evidence_b64, device_index, expected_nonce=None):
+def gpu_vm_verify(
+    gpu_tee_type, gpu_evidence_b64, device_index, expected_nonce=None, gpu_policy=None
+):
     """
     Verify a single GPU's attestation evidence via gpu_pytools (NRAS).
 
@@ -33,6 +35,8 @@ def gpu_vm_verify(gpu_tee_type, gpu_evidence_b64, device_index, expected_nonce=N
         device_index (int): The index of the GPU device being verified.
         expected_nonce (str or None): The nonce TAS issued to the agent. If provided,
             the evidence envelope's nonce must match (freshness check).
+        gpu_policy (dict or None): NVIDIA GPU policy dict (with "authorization-rules")
+            to validate claims against. If None, no policy validation is performed.
 
     Returns:
         is_verified (bool): True if verification is successful, False otherwise.
@@ -52,10 +56,24 @@ def gpu_vm_verify(gpu_tee_type, gpu_evidence_b64, device_index, expected_nonce=N
             ),
         )
 
+    # Construct AttestationPolicy if policy rules provided
+    policy = None
+    if gpu_policy:
+        try:
+            policy = nvidia_pytools.AttestationPolicy(policy_data=gpu_policy)
+        except (ValueError, Exception) as e:
+            log_function_exit("gpu_vm_verify", "policy_error")
+            return (
+                False,
+                None,
+                f"GPU {device_index}: invalid GPU policy: {e}",
+            )
+
     ok, claims, error = nvidia_pytools.verify_gpu_evidence(
         gpu_evidence_b64=gpu_evidence_b64,
         device_index=device_index,
         expected_nonce=expected_nonce,
+        policy=policy,
     )
 
     if ok and claims:
