@@ -96,7 +96,16 @@ def sev_fetch_certs_from_redis(redis_client: redis.StrictRedis, report):
 
     redis_key_crl = f"crl:{report.chip_id}:{report.reported_tcb}"
     redis_crl = redis_client.hget(redis_key_crl, "crl")
-    if redis_crl is None:
+    if redis_crl is not None:
+        crl = x509.load_pem_x509_crl(redis_crl.encode("utf-8"))
+
+    # Refresh the CRL if the short-lived TTL key has expired or the cached CRL
+    # is past its next_update, otherwise an expired CRL would fail verification.
+    now = datetime.datetime.now(datetime.timezone.utc)
+    crl_expired = crl is None or (
+        crl.next_update_utc is not None and now > crl.next_update_utc
+    )
+    if redis_crl is None or crl_expired:
         try:
             logger.info("CRL has expired, attempting to refresh and store in Redis")
             new_crl = sev.fetch.request_crl_kds(
@@ -105,7 +114,7 @@ def sev_fetch_certs_from_redis(redis_client: redis.StrictRedis, report):
             _ = redis_client.hset(
                 redis_key_crl,
                 mapping={
-                    "crl": crl.public_bytes(serialization.Encoding.PEM),
+                    "crl": new_crl.public_bytes(serialization.Encoding.PEM),
                 },
             )
             expire = redis_client.expire(
@@ -117,8 +126,6 @@ def sev_fetch_certs_from_redis(redis_client: redis.StrictRedis, report):
             logger.warning(
                 f"WARNING: Using a CRL older than 48 hours due to error: {e}"
             )
-    else:
-        crl = x509.load_pem_x509_crl(redis_crl.encode("utf-8"))
 
     log_function_exit("sev_fetch_certs_from_redis", "certificates and CRL")
     return certs, crl
@@ -302,6 +309,20 @@ def tdx_get_collateral_from_redis(
             logger.info("Returning None to force re-fetch from Intel KDS")
             log_function_exit("tdx_get_collateral_from_redis", None)
             return None
+
+        # Force a re-fetch if either cached CRL is past its next_update,
+        # otherwise an expired CRL would fail verification instead of refreshing.
+        now = datetime.datetime.now(datetime.timezone.utc)
+        for crl_name in ("root_crl", "leaf_crl"):
+            crl = collateral[crl_name]
+            if crl.next_update_utc is not None and now > crl.next_update_utc:
+                logger.info(
+                    f"Cached TDX {crl_name} is expired (next update was "
+                    f"{crl.next_update_utc}); returning None to force re-fetch "
+                    "from Intel KDS"
+                )
+                log_function_exit("tdx_get_collateral_from_redis", None)
+                return None
 
         logger.info(f"Successfully loaded TDX collateral from Redis")
         logger.debug(f"Collateral keys loaded: {list(collateral.keys())}")
@@ -551,10 +572,6 @@ def sev_vm_verify(
         else:
             logger.info("Certificates saved to Redis successfully")
         certs = {"vcek": vcek, "ask": ask, "ark": ark}
-    else:
-        if crl is None:
-            logger.warning("CRL not found in Redis, fetching from AMD key server")
-            crl = x509.load_pem_x509_certificate(certs["crl"])
 
     # Use provided report_data or fall back to nonce
     if expected_report_data is not None:
