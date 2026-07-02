@@ -265,7 +265,9 @@ logger.info("Initializing KBM client connection")
 try:
     # use the tas_kbm plugin to open the KBM client connection
     kbm_client = kbm_open_client_connection(
-        config_file=app.config["TAS_KBM_CONFIG_FILE"]
+        config_file=app.config["TAS_KBM_CONFIG_FILE"],
+        redis_client=app.extensions.get("redis_ephemeral")
+        or app.extensions.get("redis"),
     )
     logger.info("KBM client connection established successfully")
     app.extensions["kbm_client"] = kbm_client

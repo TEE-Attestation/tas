@@ -153,9 +153,15 @@ def _secrets_map_from_config(cfg: Dict[str, Any]) -> Dict[str, bytes]:
     return out
 
 
-def kbm_open_client_connection(config_file: str = None):
+def kbm_open_client_connection(
+    config_file: str = None, redis_client: Optional[Any] = None
+):
     """
     Initialize the mock KBM client.
+
+    Args:
+        config_file: Path to YAML/JSON config file
+        redis_client: Optional Redis client (ignored for mock implementation)
 
     Config file (YAML or JSON) format (all optional):
       strict: bool         # if true, missing keys raise; defaults to True when a config file exists

@@ -10,3 +10,4 @@ auth_certfile: "certs/thales_ctm/client_cert.pem"
 auth_keyfile: "certs/thales_ctm/client_key.pem"
 key_wrap_algorithm: "AES-KWP"
 requests_timeout: 15 # Timeout in seconds for HTTP requests to Thales CTM API (used in authentication and key operations)
+create_key_if_absent: false  # When true, auto-create secret keys if they don't exist during key retrieval operations
