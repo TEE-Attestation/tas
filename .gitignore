@@ -199,3 +199,5 @@ tas.log
 #VS Code settings
 .vscode/
 .github/copilot-instructions.md
+# Mock KBM SQLite database (plaintext mock secrets - never commit)
+config/kbm_db/
