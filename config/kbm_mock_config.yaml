@@ -1,4 +1,96 @@
-strict: true         # if true, missing keys raise; defaults to True when a config file exists
-secrets:             # key_id -> plaintext secret (used as-is, no derivation)
+# =============================================================================
+# Mock KBM plugin configuration (plugins/tas_kbm_mock.py)
+# -----------------------------------------------------------------------------
+# The Mock KBM is a software-only Key Broker Module for development and testing.
+# DO NOT USE IN PRODUCTION -- secrets here are stored in plaintext.
+#
+# This file is passed to the plugin via TAS_KBM_CONFIG_FILE. All keys below are
+# optional; with an empty file the plugin runs the read-only in-memory backend.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# strict (optional, default: true when this config file is present)
+# -----------------------------------------------------------------------------
+#   true  : requesting an unknown key_id raises an error.
+#   false : a random secret is generated for unknown keys -- persisted on the
+#           sqlite backend, ephemeral on the file backend (see "Key generation").
+strict: true
+
+# -----------------------------------------------------------------------------
+# Storage backend (optional)
+# -----------------------------------------------------------------------------
+#   file   (default) : secrets from the `secrets:` map below, loaded read-only
+#                      into memory. Writes are rejected.
+#   sqlite (opt-in)  : secrets persisted in a local SQLite database file.
+#                      Write-enabled and safe across multiple worker processes.
+#
+# Selection precedence:
+#   1. backend: sqlite  -> SQLite
+#   2. backend: file    -> file/in-memory (even if db_path is set)
+#   3. backend unset    -> file/in-memory (default). A db_path on its own does
+#                          NOT select SQLite; set backend: sqlite explicitly.
+# An unrecognized backend value fails fast at startup.
+#
+# To enable local writes, uncomment the two lines below:
+#backend: sqlite
+#db_path: kbm_db/kbm_mock_secrets.db
+#
+# db_path notes:
+#   - Relative paths resolve against THIS config file's directory (not the
+#     process CWD), so the server and the CLI always agree on the same file.
+#   - When omitted, the default is kbm_db/kbm_mock_secrets.db next to this file.
+
+# -----------------------------------------------------------------------------
+# SQLite behavior
+# -----------------------------------------------------------------------------
+#   - Writes are create-only: writing an existing key_id is rejected (no
+#     overwrite, no delete).
+#   - The `secrets:` map below is IGNORED by the sqlite backend; it does not
+#     seed the database. Populate it explicitly via
+#     scripts/kbm_mock_secret_writer.py.
+#   - The DB files (`*.db`, `*.db-wal`, `*.db-shm`) hold plaintext mock secrets.
+#     They live under `config/kbm_db/` by default, which is gitignored; keep it
+#     private (e.g. `chmod 700 config/kbm_db`).
+#   - The DB directory and file MUST be owned by the user running TAS (and the
+#     writer CLI) and MUST NOT be symlinks. Initialization refuses to start on a
+#     group/world-accessible mode, foreign ownership, or a symlinked path rather
+#     than risk exposing plaintext secrets.
+#   - Removing a secret is intentionally NOT supported by the plugin or the CLI,
+#     so it cannot happen by accident. To delete a key, use the sqlite3 CLI
+#     directly:
+#       sqlite3 config/kbm_db/kbm_mock_secrets.db \
+#           "DELETE FROM secrets WHERE key_id='my-key-1';"
+#     Back up the DB first. NOTE: in non-strict mode a deleted key is
+#     re-provisioned (a new random secret) on the next request.
+#
+# Injecting secrets into the SQLite backend (scripts/kbm_mock_secret_writer.py):
+#   # single secret (from stdin, so it stays out of shell history)
+#   printf 's3cr3t' | python scripts/kbm_mock_secret_writer.py \
+#       --config config/kbm_mock_config.yaml --key-id my-key-3 --secret -
+#   # bulk import every entry from a YAML `secrets:` map
+#   python scripts/kbm_mock_secret_writer.py \
+#       --config config/kbm_mock_config.yaml --import config/kbm_mock_config.yaml
+
+# -----------------------------------------------------------------------------
+# Key generation (non-strict mode)
+# -----------------------------------------------------------------------------
+# When strict is false and a requested key_id is not found, the Mock KBM
+# generates a fresh random secret to satisfy the request. What happens to that
+# secret depends on the active backend:
+#   - file backend   : ephemeral -- never written back; a different value is
+#                      produced on every call.
+#   - sqlite backend : the generated secret is written back to the database and
+#                      returned, so the same key_id returns that stored value on
+#                      every later call. Concurrent first-time requests converge
+#                      on a single stored value (one writer wins).
+# strict=true is unaffected: a missing key_id always raises "Secret not found".
+
+# -----------------------------------------------------------------------------
+# Secrets (file backend only)
+# -----------------------------------------------------------------------------
+# Mapping of key_id -> secret. Values are used verbatim (UTF-8 bytes); strings
+# like "0xdeadbeef" or "ffeeddccbbaa" are NOT hex-decoded. Served by the FILE
+# backend only; the sqlite backend ignores this map.
+secrets:
     my-key-1: "0xdeadbeef"
-    my-key-2: "ffeeddccbbaa"   # kept as the exact string content, not decoded
+    my-key-2: "ffeeddccbbaa"   # kept as exact string content, not hex-decoded

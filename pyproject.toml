@@ -17,6 +17,9 @@ known_third_party = ["sev_pytools", "tdx_pytools"]
 addopts = [
     "--import-mode=importlib",
 ]
+# Keep the repo root on sys.path so `from plugins import ...` resolves the same
+# way regardless of where pytest is launched (predictable CI, no per-env hacks).
+pythonpath = ["."]
 
 
 [project.optional-dependencies]

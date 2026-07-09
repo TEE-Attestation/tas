@@ -511,6 +511,7 @@ secrets:
   test-key-1: "test-secret-value"
   another-key: "another-secret"
 ```
+See [here](./config/kbm_mock_config.yaml) on how to configure the Mock KBM.
 
 ### Creating Custom Plugins
 
