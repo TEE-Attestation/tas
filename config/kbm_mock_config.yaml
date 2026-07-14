@@ -23,6 +23,8 @@ strict: true
 #                      into memory. Writes are rejected.
 #   sqlite (opt-in)  : secrets persisted in a local SQLite database file.
 #                      Write-enabled and safe across multiple worker processes.
+#                      Ensure that  sqlite itself is installed
+#                      (e.g. `sudo apt install sqlite3`on Ubuntu) on the host.
 #
 # Selection precedence:
 #   1. backend: sqlite  -> SQLite
