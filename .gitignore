@@ -201,3 +201,10 @@ tas.log
 .github/copilot-instructions.md
 # Mock KBM SQLite database (plaintext mock secrets - never commit)
 config/kbm_db/
+
+# Redis persistence artifacts (AOF dir + RDB snapshots) written by a
+# redis-server started from the repo root; runtime data, never commit.
+appendonlydir/
+dump.rdb
+*.rdb
+*.aof
