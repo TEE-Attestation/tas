@@ -134,6 +134,24 @@ TAS uses the following configuration for its Certificate Issuance feature:
 - `TAS_CERT_PLUGIN` — Module name for the certificate signing backend (default: `tas_cert_local`).
 - `TAS_CERT_PLUGIN_PREFIX` — Plugin discovery prefix (default: `tas_cert`).
 - `TAS_CERT_CONFIG_FILE` — Configuration file path for the active cert plugin.
+  For `tas_cert_local`, this YAML file may define `root_key_file`,
+  `root_cert_file`, `ca_key_file`, and `ca_cert_file` to persist the local
+  root and intermediate CA across restarts or load an externally generated
+  CA hierarchy. When all four files exist, TAS loads and validates them;
+  when none exist, TAS generates and writes them; a partial set fails
+  startup. Concurrent generation is guarded by an exclusive lock file
+  (`.tas_cert_local.lock`) in the key directory. Loaded certificates must be
+  currently valid CA certificates with `keyCertSign`/`cRLSign` KeyUsage, the
+  intermediate must chain to the root, and near-expiry certificates log a
+  warning.
+
+  > **Warning:** These files include the CA private keys, which are written
+  > **unencrypted** (PKCS#8, no passphrase) with `0600` permissions. Protect
+  > them at rest: store them on an encrypted volume, restrict directory
+  > ownership to the TAS service account, keep them out of version control and
+  > backups that are not access-controlled, and prefer an HSM or KMS-backed CA
+  > for production. The bundled `tas_cert_local` plugin is intended for
+  > development and testing only.
 - `TAS_CERT_VALIDITY_SECONDS` — Lifespan of issued certificates in seconds (default: 300).
 - `TAS_CERT_CLOCK_SKEW_SECONDS` — Backdating offset to handle clock skew (default: 90).
 - `TAS_CERT_TRUST_DOMAIN` — Trust domain used for the URI SAN (default: `example.org`).
