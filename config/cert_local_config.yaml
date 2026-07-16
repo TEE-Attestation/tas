@@ -2,3 +2,16 @@
 # Do NOT use this generated CA in production!
 key_type: "EC"
 key_size: 384
+
+# Optional persisted local CA files. If all four files exist, tas_cert_local
+# loads and validates them. If none exist, it generates the root and
+# intermediate CA and writes them here for reuse after restart.
+#
+# WARNING: root_key_file and ca_key_file hold UNENCRYPTED CA private keys
+# (written with 0600 permissions). Store them on an encrypted volume, restrict
+# directory ownership to the TAS service account, and keep them out of shared
+# backups or version control. Use an HSM/KMS-backed CA for production.
+# root_key_file: "./certs/tas/local/root_ca.key"
+# root_cert_file: "./certs/tas/local/root_ca.crt"
+# ca_key_file: "./certs/tas/local/issuing_ca.key"
+# ca_cert_file: "./certs/tas/local/issuing_ca.crt"
