@@ -8,6 +8,7 @@
 #
 
 import base64
+import ipaddress
 import json
 import os
 import shutil
@@ -17,6 +18,7 @@ from urllib.parse import urlsplit
 
 import pytest
 from asn1crypto import core
+from asn1crypto import x509 as asn1_x509
 from cryptography import x509
 from cryptography.hazmat.primitives import serialization
 from cryptography.x509.oid import (
@@ -551,7 +553,14 @@ def test_certify_ca_chain_renders_with_openssl(test_client, monkeypatch):
         os_module.unlink(ca_pem_path)
 
 
-def _issue_leaf(test_client, monkeypatch, cn="chain-test.local", dns_names=None):
+def _issue_leaf(
+    test_client,
+    monkeypatch,
+    cn="chain-test.local",
+    dns_names=None,
+    ip_addresses=None,
+    email_addresses=None,
+):
     """Helper: drive a successful certify call and return the parsed JSON."""
     import tas.cert.routes as cert_routes
 
@@ -562,7 +571,12 @@ def _issue_leaf(test_client, monkeypatch, cn="chain-test.local", dns_names=None)
     )
 
     nonce = get_nonce(test_client)
-    csr_bytes = generate_csr(cn=cn, dns_names=dns_names)
+    csr_bytes = generate_csr(
+        cn=cn,
+        dns_names=dns_names,
+        ip_addresses=ip_addresses,
+        email_addresses=email_addresses,
+    )
     csr_b64 = base64.b64encode(csr_bytes).decode("ascii")
     payload = build_certify_payload(nonce, csr_b64)
 
@@ -958,3 +972,40 @@ def test_spiffe_rejects_invalid_leaves(test_client, monkeypatch):
     no_uri_pem, no_uri_key = _self_signed_leaf([x509.DNSName("plain.local")])
     with pytest.raises(InvalidLeafCertificateError):
         X509Svid.parse(no_uri_pem, no_uri_key)
+
+
+def test_certify_leaf_includes_csr_ip_and_email_sans(test_client, monkeypatch):
+    result = _issue_leaf(
+        test_client,
+        monkeypatch,
+        cn="mixed-sans.local",
+        ip_addresses=["192.0.2.10", "2001:db8::1"],
+        email_addresses=["service@example.com"],
+    )
+
+    leaf = x509.load_pem_x509_certificate(result["certificate"].encode("ascii"))
+    san = leaf.extensions.get_extension_for_oid(ExtensionOID.SUBJECT_ALTERNATIVE_NAME)
+
+    assert [
+        str(address) for address in san.value.get_values_for_type(x509.IPAddress)
+    ] == ["192.0.2.10", "2001:db8::1"]
+    assert san.value.get_values_for_type(x509.RFC822Name) == ["service@example.com"]
+
+    asn1_leaf = asn1_x509.Certificate.load(
+        leaf.public_bytes(serialization.Encoding.DER)
+    )
+    asn1_san = next(
+        extension
+        for extension in asn1_leaf["tbs_certificate"]["extensions"]
+        if extension["extn_id"].native == "subject_alt_name"
+    )
+    actual_ip_octets = [
+        general_name.chosen.contents
+        for general_name in asn1_san["extn_value"].parsed
+        if general_name.name == "ip_address"
+    ]
+    expected_ip_octets = [
+        ipaddress.ip_address(address).packed
+        for address in ("192.0.2.10", "2001:db8::1")
+    ]
+    assert actual_ip_octets == expected_ip_octets

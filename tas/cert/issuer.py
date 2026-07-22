@@ -205,12 +205,14 @@ def build_tbs_der(
     ca_info: dict[str, Any],
     tas_exts: list[dict[str, Any]],
     dns_names: Sequence[str] | None = None,
+    ip_addresses: Sequence[str] | None = None,
+    email_addresses: Sequence[str] | None = None,
 ) -> x509.TbsCertificate:
     """Build an X.509 v3 TBS certificate object.
 
     This function sets SPIFFE/X509-SVID-friendly leaf extensions:
     - Subject Alternative Name with exactly one URI SAN (SPIFFE ID)
-    - Optional DNS SAN entries for classic TLS hostname verification
+    - Optional DNS, IP address, and email SAN entries for classic TLS use cases
     - Basic Constraints CA=false
     - Key Usage critical with digitalSignature
     - Extended Key Usage with clientAuth and serverAuth
@@ -226,6 +228,8 @@ def build_tbs_der(
         ca_info: Issuer metadata returned by cert plugin.
         tas_exts: TAS custom extension set.
         dns_names: Optional DNS SAN entries added alongside the single SPIFFE URI.
+        ip_addresses: Optional IP address SAN entries added alongside the SPIFFE URI.
+        email_addresses: Optional email SAN entries added alongside the SPIFFE URI.
 
     Returns:
         asn1crypto TbsCertificate object ready for external signing.
@@ -265,8 +269,8 @@ def build_tbs_der(
         }
     )
 
-    # URI SAN carries exactly one SPIFFE ID for leaf X509-SVID. Optional DNS
-    # SAN entries are added alongside it for classic TLS hostname verification.
+    # URI SAN carries exactly one SPIFFE ID for leaf X509-SVID. Optional DNS,
+    # IP address, and email SAN entries are added for classic TLS use cases.
     san_values: list[x509.GeneralName] = [
         x509.GeneralName({"uniform_resource_identifier": spiffe_uri})
     ]
@@ -276,6 +280,18 @@ def build_tbs_der(
             if name not in seen:
                 seen.add(name)
                 san_values.append(x509.GeneralName({"dns_name": name}))
+    if ip_addresses:
+        seen = set()
+        for address in ip_addresses:
+            if address not in seen:
+                seen.add(address)
+                san_values.append(x509.GeneralName({"ip_address": address}))
+    if email_addresses:
+        seen = set()
+        for address in email_addresses:
+            if address not in seen:
+                seen.add(address)
+                san_values.append(x509.GeneralName({"rfc822_name": address}))
     exts.append(
         {
             "extn_id": "subject_alt_name",

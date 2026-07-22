@@ -146,9 +146,14 @@ def certify() -> tuple[Response, int]:
             "TAS_CERT_ALLOWED_KEY_TYPES", ["RSA", "EC"]
         )
         max_bytes = current_app.config.get("TAS_CERT_MAX_CSR_BYTES", 10000)
-        public_key, spki_der, subject_cn, dns_names = sanitize_csr(
-            csr_bytes, allowed_types, max_bytes
-        )
+        (
+            public_key,
+            spki_der,
+            subject_cn,
+            dns_names,
+            ip_addresses,
+            email_addresses,
+        ) = sanitize_csr(csr_bytes, allowed_types, max_bytes)
         ski_digest = x509.SubjectKeyIdentifier.from_public_key(public_key).digest
     except ValueError as e:
         logger.error(f"CSR sanitization failed: {e}")
@@ -256,6 +261,8 @@ def certify() -> tuple[Response, int]:
         ca_info,
         tas_exts,
         dns_names=dns_names,
+        ip_addresses=ip_addresses,
+        email_addresses=email_addresses,
     )
 
     try:
