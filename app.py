@@ -9,6 +9,7 @@
 #
 
 import importlib
+import inspect
 import os
 import pkgutil
 import sys
@@ -275,13 +276,43 @@ for func in required_functions:
 kbm_get_secret = tas_kbm_plugin.kbm_get_secret
 kbm_close_client_connection = tas_kbm_plugin.kbm_close_client_connection
 kbm_open_client_connection = tas_kbm_plugin.kbm_open_client_connection
-# Initialize the KBM client
+
+# Initialize the KBM client with opt-in dependency injection
 logger.info("Initializing KBM client connection")
 try:
-    # use the tas_kbm plugin to open the KBM client connection
-    kbm_client = kbm_open_client_connection(
-        config_file=app.config["TAS_KBM_CONFIG_FILE"]
-    )
+    # Build available host kwargs
+    kbm_host_kwargs = {
+        "redis_client": app.extensions.get("redis_ephemeral")
+        or app.extensions.get("redis"),
+    }
+
+    # Get declared kwargs from the plugin (defaults to empty set if not declared)
+    declared_kwargs = getattr(tas_kbm_plugin, "KBM_HOST_KWARGS", set())
+
+    # Verify that all declared kwargs are available
+    unknown_kwargs = declared_kwargs - kbm_host_kwargs.keys()
+    if unknown_kwargs:
+        raise RuntimeError(
+            f"KBM plugin {app.config['TAS_KBM_PLUGIN']} declares unsupported "
+            f"host kwargs: {sorted(unknown_kwargs)}"
+        )
+
+    # Build open_kwargs with only the declared dependencies
+    open_kwargs = {"config_file": app.config["TAS_KBM_CONFIG_FILE"]}
+    for name in declared_kwargs:
+        open_kwargs[name] = kbm_host_kwargs[name]
+
+    # Validate that the plugin's function signature is compatible
+    try:
+        inspect.signature(kbm_open_client_connection).bind(**open_kwargs)
+    except TypeError as e:
+        raise RuntimeError(
+            f"KBM plugin {app.config['TAS_KBM_PLUGIN']} is incompatible with the "
+            f"host call signature: {e}"
+        ) from e
+
+    # Initialize the KBM client with only the declared kwargs
+    kbm_client = kbm_open_client_connection(**open_kwargs)
     logger.info("KBM client connection established successfully")
     app.extensions["kbm_client"] = kbm_client
     app.extensions["kbm_get_secret"] = kbm_get_secret
