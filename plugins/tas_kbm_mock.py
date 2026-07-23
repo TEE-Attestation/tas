@@ -498,102 +498,74 @@ def _secrets_map_from_config(cfg: Dict[str, Any]) -> Dict[str, bytes]:
     return out
 
 
-def _resolve_db_path(db_path: Optional[str], base_dir: str) -> str:
-    """Resolve the SQLite DB path.
-
-    Relative paths are resolved against ``base_dir`` (the config file's directory)
-    so the server and the CLI agree on the same file regardless of process CWD.
-    When ``db_path`` is not provided, a default under ``base_dir`` is used.
-    """
-    if db_path:
-        p = db_path if os.path.isabs(db_path) else os.path.join(base_dir, db_path)
-    else:
-        p = os.path.join(base_dir, DEFAULT_DB_DIRNAME, DEFAULT_DB_FILENAME)
-    return os.path.abspath(p)
-
-
-def _select_backend(cfg: Dict[str, Any]) -> str:
-    """Return 'file' or 'sqlite' based on config; raise on an invalid backend.
-
-    - explicit ``backend: sqlite`` or ``backend: file`` wins.
-    - ``backend`` unset -> 'file'. A ``db_path`` on its own does NOT select the
-      SQLite backend; it must be requested explicitly with ``backend: sqlite``.
-    """
-    backend = cfg.get("backend") if isinstance(cfg, dict) else None
-    if backend is None or str(backend).strip() == "":
-        return "file"
-    normalized = str(backend).strip().lower()
-    if normalized in ("file", "sqlite"):
-        return normalized
-    raise ValueError(
-        f"Invalid mock KBM backend: {backend!r} (expected 'file' or 'sqlite')"
-    )
-
-
-def _compute_strict(cfg: Dict[str, Any], config_present: Optional[bool] = None) -> bool:
-    # When a config file is present, default strict to True so missing keys are
-    # NOT silently derived (which would auto-generate and, on the SQLite backend,
-    # persist secrets for unknown keys). Only an explicit ``strict: false`` opts
-    # out. With no config file, default to False to keep the zero-config in-memory
-    # dev experience.
-    if not isinstance(cfg, dict):
-        return bool(config_present)
-    if config_present is None:
-        # Direct callers (e.g. tests) that pass a dict without a file signal:
-        # treat a non-empty dict as an implicit "config present".
-        config_present = bool(cfg)
-    if config_present:
-        return bool(cfg.get("strict", True))
-    return bool(cfg.get("strict", False))
-
-
 def _client_from_config(
     cfg: Dict[str, Any],
-    base_dir: Optional[str] = None,
-    db_path_override: Optional[str] = None,
-    config_present: Optional[bool] = None,
-) -> "_MockKBMClient":
-    """Build a mock KBM client from a parsed config dict.
-
-    Used by kbm_open_client_connection. ``config_present`` records whether the
-    config actually came from a file on disk; it drives the ``strict`` default
-    (see _compute_strict). When ``db_path_override`` is given, the SQLite backend
-    is used -- but an explicit ``backend: file`` in the config is a contradiction
-    and raises ValueError rather than being silently overridden. The config
-    ``secrets:`` map is only used by the file backend; the SQLite backend is
-    populated exclusively via explicit writes (the standalone CLI
-    scripts/kbm_mock_secret_writer.py, which does not import this module).
+    base_dir: str = None,
+    db_path_override: str = None,
+    config_present: bool = False,
+) -> _MockKBMClient:
     """
-    if base_dir is None:
-        base_dir = os.getcwd()
-    if not isinstance(cfg, dict):
-        cfg = {}
-    strict = _compute_strict(cfg, config_present)
+    Build a _MockKBMClient from configuration dict, selecting backend and options.
 
-    if db_path_override is not None:
-        explicit_backend = cfg.get("backend")
-        if (
-            explicit_backend is not None
-            and str(explicit_backend).strip().lower() == "file"
-        ):
+    Args:
+        cfg: Configuration dictionary (from YAML/JSON)
+        base_dir: Base directory for relative db_path; defaults to cwd if not provided
+        db_path_override: Explicit SQLite DB path (for TAS_KBM_DB_PATH env var override)
+        config_present: True if a config file was loaded (affects strict default)
+
+    Returns:
+        _MockKBMClient with appropriate backend store
+
+    Raises:
+        ValueError: If configuration is invalid or conflicting
+    """
+    base_dir = base_dir or os.getcwd()
+
+    # Determine which backend to use
+    backend = cfg.get("backend", "file")
+    db_path = cfg.get("db_path")
+    strict = cfg.get("strict")
+    backend_explicitly_set = "backend" in cfg
+
+    # If db_path_override is provided, it takes precedence (select SQLite)
+    if db_path_override:
+        if backend_explicitly_set and backend == "file":
+            # Explicit file backend conflicts with db_path_override
             raise ValueError(
-                "conflicting mock KBM configuration: a db_path override selects "
-                "the SQLite backend but config sets backend: file"
+                "conflicting mock KBM configuration: "
+                "backend=file conflicts with explicit db_path_override"
             )
         backend = "sqlite"
-        raw_db_path = db_path_override
-    else:
-        backend = _select_backend(cfg)
-        raw_db_path = cfg.get("db_path")
+        db_path = db_path_override
 
+    # Validate backend choice
+    if backend not in ("file", "sqlite"):
+        raise ValueError(
+            f"Invalid mock KBM backend: {backend!r}; must be 'file' or 'sqlite'"
+        )
+
+    # Determine strict mode
+    if strict is None:
+        # If a config file was present, default to True (no implicit derivation)
+        # If no config file, default to False (allow ephemeral generation)
+        strict = config_present
+
+    # Build the appropriate backend store
     if backend == "sqlite":
-        db_path = _resolve_db_path(raw_db_path, base_dir)
+        # SQLite backend: resolve db_path relative to base_dir
+        if not db_path:
+            db_path = os.path.join(base_dir, DEFAULT_DB_DIRNAME, DEFAULT_DB_FILENAME)
+        else:
+            if not os.path.isabs(db_path):
+                db_path = os.path.join(base_dir, db_path)
+        logger.debug(f"Using SQLite backend with db_path: {db_path}")
         store = _SQLiteStore(db_path)
-        logger.info(f"Mock KBM using SQLite backend (write-enabled) at {db_path}")
-        return _MockKBMClient(strict=strict, store=store)
+    else:
+        # File (in-memory) backend: load secrets from config
+        secrets_map = _secrets_map_from_config(cfg)
+        logger.debug(f"Using file (in-memory) backend with {len(secrets_map)} secrets")
+        store = _InMemoryStore(secrets_map)
 
-    store = _InMemoryStore(_secrets_map_from_config(cfg))
-    logger.info("Mock KBM using file/in-memory backend (read-only)")
     return _MockKBMClient(strict=strict, store=store)
 
 
@@ -610,11 +582,8 @@ def kbm_open_client_connection(config_file: str = None):
         my-key-1: "plain-text-secret"
         my-key-2: "ffeeddccbbaa"   # kept as the exact string content, not decoded
 
-    The "file" backend is read-only and serves the `secrets:` map above. The
-    "sqlite" backend is write-enabled (create-only; no overwrite and no delete)
-    and does NOT seed from the `secrets:` map -- populate it with
-    scripts/kbm_mock_secret_writer.py. In non-strict mode, kbm_get_secret
-    auto-provisions unknown keys and persists them (get-or-create).
+    Args:
+        config_file: Path to YAML/JSON config file
     """
     logger.info("Initializing mock KBM client connection")
     cfg = _load_config_file(config_file)
