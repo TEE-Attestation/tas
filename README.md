@@ -107,7 +107,7 @@ redis-cli ping
 ### Platform Support
 
 - **AMD SEV-SNP**: Full attestation support
-- **Intel TDX**: Full attestation support  
+- **Intel TDX**: Full attestation support
 - **NVIDIA GPU**: Optional GPU attestation via the NVIDIA Remote Attestation Service (NRAS), bound to AMD SEV-SNP / Intel TDX evidence (requires `nvidia_pytools`)
 
 ## Installation
@@ -472,13 +472,67 @@ Each KBM plugin must implement three functions:
 
 ```python
 def kbm_open_client_connection(config_file: str = None):
-    """Initialize and return a client handle"""
-    
+    """Initialize and return a client handle
+
+    Args:
+        config_file: Path to plugin configuration file (YAML or JSON)
+
+    Returns:
+        Client handle for use with kbm_get_secret
+    """
+
 def kbm_get_secret(client, key_id: str, wrapping_key: bytes):
-    """Retrieve and return a secret (JSON-serializable)"""
-    
+    """Retrieve and return a secret (JSON-serializable)
+
+    Args:
+        client: Client handle from kbm_open_client_connection
+        key_id: Identifier for the secret to retrieve
+        wrapping_key: Client RSA public key for wrapping the secret
+
+    Returns:
+        Dictionary with keys: wrapped_key, blob, iv, tag (all base64-encoded)
+    """
+
 def kbm_close_client_connection(client) -> None:
-    """Cleanup client connection"""
+    """Cleanup client connection
+
+    Args:
+        client: Client handle to close
+    """
+```
+
+#### Host-Provided Dependencies (Optional)
+
+Plugins can opt-in to receive host-provided dependencies via a module-level declaration:
+
+```python
+# Module-level declaration: what kwargs this plugin wants from the host
+KBM_HOST_KWARGS = {"redis_client"}  # or set() if no dependencies needed
+```
+
+Currently supported host kwargs:
+- `redis_client`: Redis connection for distributed locking, caching, or other backend needs
+
+The host will only pass declared dependencies to `kbm_open_client_connection()`. Plugins that don't declare dependencies can omit those parameters from their function signature.
+
+**Example:** If your plugin doesn't need Redis, simply don't declare it:
+```python
+# tas_kbm_minimal.py
+KBM_HOST_KWARGS = set()
+
+def kbm_open_client_connection(config_file: str = None):
+    # No redis_client parameter needed
+    ...
+```
+
+If your plugin needs Redis for distributed locking:
+```python
+# tas_kbm_with_redis.py
+KBM_HOST_KWARGS = {"redis_client"}
+
+def kbm_open_client_connection(config_file: str = None, redis_client=None):
+    # redis_client will be provided by the host
+    ...
 ```
 
 ### Plugin Configuration
@@ -497,7 +551,7 @@ export TAS_KBM_CONFIG_FILE="./config/thales_ctm/thales_ctm.yaml"
 ```
 
 The Thales CTM REST Plugin configuration file should contain CTM server details and credentials,
-see [documentation](certs/thales_ctm/README.md) on how to configure it. 
+see [documentation](certs/thales_ctm/README.md) on how to configure it.
 
 #### Mock Plugin
 ```bash
@@ -518,11 +572,15 @@ See [here](./config/kbm_mock_config.yaml) on how to configure the Mock KBM.
 1. Create a Python module in `plugins/` directory
 2. Module name must start with `TAS_PLUGIN_PREFIX` (default: `tas_kbm`)
 3. Implement the three required functions
-4. Set `TAS_KBM_PLUGIN` to your module name
+4. Optionally declare host-provided dependencies via `KBM_HOST_KWARGS` (module-level set)
+5. Set `TAS_KBM_PLUGIN` to your module name
 
-Example custom plugin:
+Example custom plugin without host dependencies:
 ```python
 # plugins/tas_kbm_custom.py
+
+# Declare that this plugin does not need any host-provided kwargs
+KBM_HOST_KWARGS = set()
 
 def kbm_open_client_connection(config_file: str = None):
     # Initialize your backend client
@@ -539,7 +597,37 @@ def kbm_close_client_connection(client) -> None:
 
 __all__ = [
     "kbm_open_client_connection",
-    "kbm_get_secret", 
+    "kbm_get_secret",
+    "kbm_close_client_connection"
+]
+```
+
+Example custom plugin with Redis dependency:
+```python
+# plugins/tas_kbm_custom_with_redis.py
+
+from typing import Optional, Any
+
+# Declare that this plugin wants redis_client from the host
+KBM_HOST_KWARGS = {"redis_client"}
+
+def kbm_open_client_connection(config_file: str = None, redis_client: Optional[Any] = None):
+    # Initialize your backend client
+    # Use redis_client for distributed locking, caching, etc.
+    return my_backend_client
+
+def kbm_get_secret(client, key_id: str, wrapping_key: bytes):
+    # Retrieve secret from your backend
+    # Wrap with provided public key
+    return wrapped_secret
+
+def kbm_close_client_connection(client) -> None:
+    # Cleanup
+    client.disconnect()
+
+__all__ = [
+    "kbm_open_client_connection",
+    "kbm_get_secret",
     "kbm_close_client_connection"
 ]
 ```
@@ -570,7 +658,7 @@ python -m pytest tests/ --cov=tas --cov-report=html
  - Policy identifier changes
  - **Removal of deprecated `/policy/v0/*` endpoints** (31 March 2026) — migrate to `/management/policy/v0/*`
 
-## Contributing 
+## Contributing
 
 Contributing to the project is simple! Just send a pull request through GitHub. For detailed instructions on formatting your changes and following our contribution guidelines, take a look at the [CONTRIBUTING](./CONTRIBUTING.md) file.
 
@@ -606,7 +694,7 @@ Error: Failed to initialize KBM client
 - Use mock plugin for testing: `export TAS_KBM_PLUGIN=tas_kbm_mock`
 
 ### Python Version Compatibility
-Tested on Python 3.10 - 3.14. 
+Tested on Python 3.10 - 3.14.
 
 ### Debug Mode
 
