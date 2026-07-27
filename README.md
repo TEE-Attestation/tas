@@ -8,6 +8,7 @@ A simple and secure service for Trusted Execution Environment (TEE) attestation,
 
 - [Overview](#overview)
 - [Quick Start](#quick-start)
+- [Quick Run Script](#quick-run-script)
 - [Prerequisites](#prerequisites)
 - [Installation](#installation)
 - [Configuration](#configuration)
@@ -81,6 +82,182 @@ python app.py
 TAS will be available at `http://localhost:5000`. See [API Documentation](#api-documentation) for available endpoints.
 
 With TAS running you can use the [TAS agent](https://github.com/TEE-Attestation/tas_agent) to collect evidence and attest your CVMs. Alternatively for testing, check the API specification if you want to manually submit evidence to TAS.
+
+## Quick Run Script
+
+`scripts/quickrun.sh` is a self-contained helper for spinning up a local TAS instance for development and testing. It handles the Python virtual environment, dependency installation, API key generation, and optional TLS — no external key manager or policy signing infrastructure required. It uses the mock KBM plugin backed by a local SQLite database.
+
+### Prerequisites
+
+- Python 3.10+
+- `openssl`
+- Redis running on `localhost:6379`
+
+### 1. Build
+
+> **Note:** `build` should be run as a regular user — `sudo` is not required or recommended. If you do run `build` with `sudo`, all generated files will be owned by root, and you will also need to use `sudo` for subsequent `run` and `uninstall` commands.
+
+Run once to set up the virtual environment, install dependencies, and generate API keys and config:
+
+```bash
+cd scripts
+bash ./quickrun.sh build
+```
+
+Common build options:
+
+```bash
+# Behind a corporate proxy
+bash ./quickrun.sh build --proxy "http://proxy.example.com:8080"
+
+# Enable HTTPS (generates a self-signed certificate)
+bash ./quickrun.sh build --tls
+
+# Bind to a specific host/port (defaults: 127.0.0.1:5000)
+bash ./quickrun.sh build --host 0.0.0.0 --port 5000
+
+# Also install nvidia_pytools for GPU attestation
+bash ./quickrun.sh build --include-nvidia
+
+# Wipe and recreate the virtual environment
+```
+
+> **Note:** NVIDIA GPU attestation is an optional feature in TAS. `--include-nvidia` installs `nvidia_pytools` into the virtual environment to enable it. This requires the `nvidia_pytools` source to be available (either cloned alongside this repo or accessible via pip). If you do not need GPU attestation, omit this flag — it is not required for AMD SEV-SNP or Intel TDX attestation. See [Platform Support](#platform-support) for more details.
+
+```bash
+# Wipe and recreate the virtual environment
+bash ./quickrun.sh build --build-env
+```
+
+### 2. Add Secrets to the Mock KBM
+
+Before policies can return secrets, inject the secret material for each `key-id` into the mock KBM's SQLite database:
+
+```bash
+# Inline value (visible in process list — fine for local testing)
+python3 kbm_mock_secret_writer.py \
+  --db .quickrun/kbm_db/kbm_mock_secrets.db \
+  --key-id "my-policy-key" \
+  --secret "my-secret-value"
+
+# From stdin (keeps value out of shell history)
+printf 'my-secret-value' | python3 kbm_mock_secret_writer.py \
+  --db .quickrun/kbm_db/kbm_mock_secrets.db \
+  --key-id "my-policy-key" \
+  --secret -
+```
+
+The `key-id` must match the `key_id` field in the policy you create in the next step. Secrets are create-only — to remove one, use `sqlite3` directly:
+
+```bash
+sqlite3 .quickrun/kbm_db/kbm_mock_secrets.db \
+  "DELETE FROM secrets WHERE key_id='my-policy-key';"
+```
+
+### 3. Create a Policy
+
+Use the [tas-policy CLI](https://github.com/TEE-Attestation/tas_policy_cli) to create and upload an attestation policy. The `--key-id` must match the secret you injected above:
+
+```bash
+# SEV (unsigned, for local testing)
+./tas-policy create \
+  --policy-id "my-policy" \
+  --key-id "my-policy-key" \
+  --cvm-type SEV \
+  --name "My Test Policy" \
+  --processor-family milan \
+  --unsigned \
+  --tas-host 127.0.0.1 --tas-port 5000 \
+  --api-key-file /path/to/scripts/.quickrun/TAS_MANAGEMENT_API_KEY.txt \
+  --no-tls
+
+# TDX (unsigned, for local testing)
+./tas-policy create \
+  --policy-id "my-policy" \
+  --key-id "my-policy-key" \
+  --cvm-type TDX \
+  --name "My Test Policy" \
+  --unsigned \
+  --tas-host 127.0.0.1 --tas-port 5000 \
+  --api-key-file /path/to/scripts/.quickrun/TAS_MANAGEMENT_API_KEY.txt \
+  --no-tls
+```
+
+To update an existing policy field (e.g. relax a minimum SVN requirement):
+
+```bash
+./tas-policy update \
+  --policy-id "my-policy" \
+  --unsigned \
+  --min-tee-svn 0 \
+  --tas-host 127.0.0.1 --tas-port 5000 \
+  --api-key-file /path/to/scripts/.quickrun/TAS_MANAGEMENT_API_KEY.txt \
+  --no-tls
+```
+
+> **SEV TCB note**: `--min-tee-svn` sets the minimum requirement for `current_tcb.tee`, `committed_tcb.tee`, and `launch_tcb.tee` simultaneously. If attestation fails with `current_tcb.tee value N < required minimum M`, the VM's actual TEE SVN is `N` — lower the policy minimum to match.
+
+### 4. Run
+
+```bash
+bash ./quickrun.sh run
+```
+
+The startup banner prints the server URL, truncated API keys, and example `curl` commands. Common run options:
+
+```bash
+# Override host/port at runtime
+bash ./quickrun.sh run --host 0.0.0.0 --port 5000
+
+# Start with TLS (build must have been run with --tls)
+bash ./quickrun.sh run --tls
+
+# Install and start as a persistent systemd service (requires sudo)
+sudo bash ./quickrun.sh run --run-as-service
+```
+
+`--run-as-service` installs TAS as a systemd unit (`tas-quickrun.service`) and starts it immediately. Because creating a file under `/etc/systemd/system/` requires elevated privileges, `sudo` is required. Once installed, the service starts automatically on boot and can be managed with standard `systemctl` commands:
+
+```bash
+# Check service status
+sudo systemctl status tas-quickrun.service
+
+# Stop the service
+sudo systemctl stop tas-quickrun.service
+
+# Start the service
+sudo systemctl start tas-quickrun.service
+
+# Restart the service
+sudo systemctl restart tas-quickrun.service
+
+# View logs
+sudo journalctl -u tas-quickrun.service -f
+```
+
+To permanently remove the service, use the uninstall command (see [Uninstall](#6-uninstall) below).
+
+### 5. Verify
+
+```bash
+curl -k -H "X-API-KEY: $(cat scripts/.quickrun/TAS_API_KEY.txt)" \
+  http://127.0.0.1:5000/version
+
+curl -k -H "X-MANAGEMENT-API-KEY: $(cat scripts/.quickrun/TAS_MANAGEMENT_API_KEY.txt)" \
+  http://127.0.0.1:5000/management/policy/v0/list
+```
+
+### 6. Uninstall
+
+Removes the virtual environment, generated config, API keys, and certificates. If a systemd service was installed, also stops and removes it:
+
+```bash
+# Foreground run only
+bash ./quickrun.sh uninstall
+
+# Including systemd service
+sudo bash ./quickrun.sh uninstall
+```
 
 ## Prerequisites
 
