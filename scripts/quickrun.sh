@@ -186,7 +186,7 @@ _clone_and_install() {
     local name=$1
     local url=$2
     local proxy=${3:-}
-    local dest="${PROJECT_DIR}/../${name}"
+    local dest="${QUICKRUN_DIR}/${name}"
 
     if [[ ! -d "${dest}" ]]; then
         info "Cloning ${name}..."
@@ -244,6 +244,7 @@ TAS_REDIS_PERSISTENCE: false
 TAS:
   logging:
     level: "INFO"
+    file: "./tas.log"
 YAML
     sed -i "s/PLACEHOLDER_PORT/${port}/g" "${QUICKRUN_DIR}/tas_config.yaml"
 }
@@ -278,6 +279,12 @@ _generate_tls_certificate() {
         else
             san="${san},DNS:${bind_host}"
         fi
+    else
+        # bind-all: include every non-loopback IP currently assigned to this host
+        while IFS= read -r _ip; do
+            [[ "$_ip" == "127.0.0.1" ]] && continue
+            san="${san},IP:${_ip}"
+        done < <(hostname -I | tr ' ' '\n' | grep -v '^$')
     fi
 
     # Step 4: Sign the server CSR with the CA
