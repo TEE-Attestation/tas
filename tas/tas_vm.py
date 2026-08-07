@@ -26,7 +26,11 @@ from cryptography.hazmat.primitives.asymmetric import ec, padding, utils
 from flask import current_app
 
 try:
-    from tas.components.gpu_nvidia import gpu_vm_verify
+    from tas.components.gpu_nvidia import (
+        gpu_get_collateral_refs,
+        gpu_new_collateral,
+        gpu_vm_verify,
+    )
 
     GPU_ATTESTATION_AVAILABLE = True
 except ImportError:
@@ -38,6 +42,8 @@ except ImportError:
         device_index,
         expected_nonce=None,
         gpu_policy=None,
+        mode="remote",
+        collateral=None,
     ):
         return (
             False,
@@ -47,6 +53,12 @@ except ImportError:
                 "(nvidia_pytools not installed)"
             ),
         )
+
+    def gpu_get_collateral_refs(gpu_evidence_b64, device_index=0):
+        return None
+
+    def gpu_new_collateral(rims=None):
+        return None
 
 
 from tas.policy_helper import is_policy_signed, verify_policy_signature
@@ -453,6 +465,76 @@ def tdx_save_collateral_to_redis(
         return False
 
 
+def gpu_get_rims_from_redis(redis_client: redis.StrictRedis, rim_ids):
+    """
+    Fetches cached NVIDIA RIM collateral from Redis.
+
+    Args:
+        redis_client (redis.StrictRedis): Redis client instance for database operations.
+        rim_ids (Iterable[str]): RIM IDs to look up (e.g. driver and VBIOS RIM IDs).
+
+    Returns:
+        dict: Mapping of rim_id -> raw RIM XML bytes for those present in the cache.
+
+    Notes:
+        - The Redis key format is "gpu_rim:<rim_id>" with hash field "rim"
+          holding the base64-encoded RIM XML.
+        - RIM content is immutable for a given driver/VBIOS version, so a cache
+          hit can be reused directly; the verifier re-checks its signature and
+          certificate chain on every use.
+    """
+    log_function_entry("gpu_get_rims_from_redis")
+
+    rims = {}
+    for rim_id in rim_ids:
+        data = redis_client.hget(f"gpu_rim:{rim_id}", "rim")
+        if data:
+            try:
+                rims[rim_id] = base64.b64decode(data)
+            except Exception as e:
+                logger.warning(f"Failed to decode cached RIM {rim_id}: {e}")
+
+    logger.info(f"Loaded {len(rims)} RIM(s) from Redis cache")
+    log_function_exit("gpu_get_rims_from_redis", f"{len(rims)} rims")
+    return rims
+
+
+def gpu_save_rims_to_redis(redis_client: redis.StrictRedis, rims):
+    """
+    Saves NVIDIA RIM collateral to Redis for reuse by future attestations.
+
+    Args:
+        redis_client (redis.StrictRedis): Redis client instance for database operations.
+        rims (dict): Mapping of rim_id -> raw RIM XML bytes to store.
+
+    Returns:
+        bool: True if all RIMs were saved without error, False otherwise.
+
+    Notes:
+        - The Redis key format is "gpu_rim:<rim_id>" with hash field "rim".
+        - A 48h TTL bounds how long unused RIM entries persist.
+    """
+    log_function_entry("gpu_save_rims_to_redis")
+
+    ok = True
+    for rim_id, xml_bytes in rims.items():
+        redis_key = f"gpu_rim:{rim_id}"
+        try:
+            redis_client.hset(
+                redis_key,
+                mapping={"rim": base64.b64encode(xml_bytes)},
+            )
+            # Set expiration to 48 hours (only if not already set)
+            redis_client.expire(redis_key, 60 * 60 * 24 * 2, nx=True)
+        except Exception as e:
+            logger.warning(f"Failed to save RIM {rim_id} to Redis: {e}")
+            ok = False
+
+    logger.info(f"Saved {len(rims)} RIM(s) to Redis cache")
+    log_function_exit("gpu_save_rims_to_redis", ok)
+    return ok
+
+
 def get_policy_from_redis(redis_client: redis.StrictRedis, policy_id: str):
     """
     Fetches the policy from Redis based on the policy id.
@@ -806,26 +888,71 @@ def vm_verify(
 
             gpu_list_sorted = sorted(gpu_list, key=lambda e: e["device-index"])
 
+            # GPU verification mode is configured service-wide (local or remote).
+            # Fall back to remote when there is no active application context
+            # (e.g. when vm_verify is exercised directly in unit tests).
+            try:
+                gpu_mode = current_app.config.get(
+                    "TAS_NVIDIA_GPU_VERIFICATION_MODE", "remote"
+                )
+            except RuntimeError:
+                gpu_mode = "remote"
+
             # Verify each GPU and build hash chain in a single pass
             gpu_hashes = []
             for gpu_entry in gpu_list_sorted:
                 # GPU policy is keyed by device type (e.g. "gpu-nvidia")
                 gpu_type = gpu_entry.get("type", "gpu-nvidia")
+                gpu_evidence = gpu_entry.get("evidence", "")
+                gpu_device_index = gpu_entry.get("device-index", -1)
                 gpu_policy_for_device = (
                     gpu_component_policy.get(gpu_type)
                     if isinstance(gpu_component_policy, dict)
                     else None
                 )
 
+                # In local mode, pre-fetch cached RIM collateral from Redis so the
+                # verifier only downloads from NVIDIA what is missing. The report
+                # is parsed just enough (via nvidia_pytools) to derive the RIM IDs.
+                gpu_collateral = None
+                cached_rim_ids = set()
+                if gpu_mode == "local":
+                    try:
+                        refs = gpu_get_collateral_refs(gpu_evidence, gpu_device_index)
+                        if refs is not None:
+                            cached_rims = gpu_get_rims_from_redis(
+                                redis_client,
+                                [refs.driver_rim_id, refs.vbios_rim_id],
+                            )
+                            cached_rim_ids = set(cached_rims.keys())
+                            gpu_collateral = gpu_new_collateral(cached_rims)
+                    except Exception as e:
+                        logger.warning(
+                            f"GPU {gpu_device_index}: RIM collateral pre-fetch skipped: {e}"
+                        )
+
                 gpu_ok, _, gpu_err = gpu_vm_verify(
                     gpu_type,
-                    gpu_entry.get("evidence", ""),
-                    gpu_entry.get("device-index", -1),
+                    gpu_evidence,
+                    gpu_device_index,
                     expected_nonce=nonce,
                     gpu_policy=gpu_policy_for_device,
+                    mode=gpu_mode,
+                    collateral=gpu_collateral,
                 )
                 if not gpu_ok:
                     return False, None, gpu_err
+
+                # Persist any RIMs the verifier had to fetch (i.e. cache misses)
+                # so future attestations on the same driver/VBIOS reuse them.
+                if gpu_mode == "local" and gpu_collateral is not None:
+                    new_rims = {
+                        rid: xml
+                        for rid, xml in gpu_collateral.rims.items()
+                        if rid not in cached_rim_ids
+                    }
+                    if new_rims:
+                        gpu_save_rims_to_redis(redis_client, new_rims)
 
                 # Hash the inner raw evidence (the binary GPU attestation report).
                 # Decode outer base64 → JSON envelope → decode inner "evidence" → raw bytes.

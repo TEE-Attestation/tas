@@ -40,6 +40,11 @@ TAS_ENFORCE_SIGNED_POLICIES: true
 # Certificate issuance feature (disabled by default until production-ready)
 #TAS_CERT_ENABLED: false
 
+# Backend used to verify NVIDIA GPU evidence:
+#   "remote" - NVIDIA Remote Attestation Service (NRAS)
+#   "local"  - verify locally with nvidia_pytools (RIMs cached in Redis)
+#TAS_NVIDIA_GPU_VERIFICATION_MODE: "remote"
+
 # Optional nested settings (available under app.config['TAS'])
 TAS:
   limits:
