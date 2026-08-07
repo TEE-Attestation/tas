@@ -55,6 +55,8 @@ class TestGpuVmVerify:
             device_index=0,
             expected_nonce=None,
             policy=None,
+            mode="remote",
+            collateral=None,
         )
 
     @patch("tas.components.gpu_nvidia.nvidia_pytools")
@@ -88,6 +90,8 @@ class TestGpuVmVerify:
             device_index=2,
             expected_nonce="abc123",
             policy=None,
+            mode="remote",
+            collateral=None,
         )
 
     def test_fallback_stub_when_import_fails(self):

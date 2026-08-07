@@ -36,6 +36,7 @@ class BaseConfig:
     TAS_MANAGEMENT_API_KEY = ""
     TAS_MANAGEMENT_API_KEY_MIN_LENGTH = 64
     TAS_NONCE_EXPIRATION_SECONDS = 120
+    TAS_NVIDIA_GPU_VERIFICATION_MODE = "remote"  # "remote" (NRAS) or "local"
     TAS_REDIS_HOST = "localhost"
     TAS_REDIS_PORT = 6379
     TAS_REDIS_PASSWORD = ""
