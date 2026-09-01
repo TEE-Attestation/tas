@@ -853,7 +853,7 @@
                   "nonce",
                   "tee-evidence",
                   "csr",
-                  "policy-domain"
+                  "domain-policy"
                 ],
                 "properties": {
                   "tee-type": {
@@ -870,7 +870,7 @@
                     "type": "string",
                     "format": "base64"
                   },
-                  "policy-domain": {
+                  "domain-policy": {
                     "type": "string"
                   },
                   "gpu-evidence": {

@@ -29,7 +29,7 @@ def build_certify_payload(nonce: str, csr_b64: str, **overrides: Any) -> dict[st
         "nonce": nonce,
         "tee-evidence": base64.b64encode(b"fake_raw_evidence_bytes").decode("ascii"),
         "csr": csr_b64,
-        "policy-domain": "staging",
+        "domain-policy": "staging",
     }
     payload.update(overrides)
     return payload

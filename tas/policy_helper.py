@@ -177,3 +177,91 @@ def validate_policy_key(policy_key):
         )
 
     return True, None
+
+
+def validate_key_component(value, label):
+    """Validate a Redis key component (e.g. policy id or domain name) is safe.
+
+    Rejects empty values and any characters outside the allowed set so the
+    value can be embedded in a Redis key without introducing pattern-matching
+    or injection hazards.
+
+    Returns (True, None) if valid, else (False, error_message).
+    """
+    if not value or not isinstance(value, str):
+        return False, f"{label} is required"
+    if not POLICY_KEY_COMPONENT_RE.match(value):
+        return False, (
+            f"Invalid {label}. Use only alphanumeric characters, hyphens, "
+            "underscores, and dots"
+        )
+    return True, None
+
+
+def validate_policy_metadata(policy, require_key_id=True):
+    """Validate the structural requirements shared by TAS policy documents.
+
+    Checks the presence of the ``metadata`` and ``validation_rules`` sections
+    and the required ``policy_type`` and ``policy_id`` metadata fields,
+    including ``policy_id`` character safety. ``key_id`` names the KMS secret a
+    secret-release policy authorises, so it is required by default; the certify
+    flow does not release secrets and passes ``require_key_id=False`` to make it
+    optional for certify-policies.
+
+    Returns (True, None) if valid, else (False, error_message).
+    """
+    if "metadata" not in policy:
+        return False, "Policy must contain 'metadata' section"
+    if "validation_rules" not in policy:
+        return False, "Policy must contain 'validation_rules' section"
+
+    metadata = policy["metadata"]
+    if not isinstance(metadata, dict):
+        return False, "Policy 'metadata' must be an object"
+
+    if not metadata.get("policy_type"):
+        return False, "Policy type is required in metadata (e.g. SEV, TDX)"
+    if require_key_id and not metadata.get("key_id"):
+        return False, "Key ID is required in metadata"
+    if not metadata.get("policy_id"):
+        return False, "Policy ID is required in metadata"
+
+    return validate_key_component(str(metadata["policy_id"]), "policy_id")
+
+
+def check_signature_for_store(policy, enforce_signed, trusted_keys):
+    """Validate a policy's signature at store time per configuration.
+
+    Rejects the deprecated ``signed_data`` field, enforces signing when
+    required, and verifies the signature against the trusted keys. The check is
+    structure-agnostic (the signature covers all top-level fields except
+    ``signature``), so it applies to policies and domain-policies alike.
+
+    Returns ``(ok, error_message, warning_message)``. ``error_message`` is set
+    when the policy must be rejected; ``warning_message`` is set for a
+    non-fatal condition (an unsigned policy permitted by configuration).
+    """
+    is_signed = is_policy_signed(policy)
+
+    if is_signed and "signed_data" in policy.get("signature", {}):
+        return (
+            False,
+            "The 'signed_data' field in the signature object is deprecated and no "
+            "longer supported. Please re-sign the policy so that the signature "
+            "covers all top-level fields.",
+            None,
+        )
+
+    if not is_signed:
+        if enforce_signed:
+            return False, "Unsigned policies are not allowed by configuration", None
+        return (
+            True,
+            None,
+            "WARNING: Policy is not signed and cannot be verified for integrity",
+        )
+
+    if not verify_policy_signature(policy, trusted_keys):
+        return False, "Policy signature verification failed", None
+
+    return True, None, None

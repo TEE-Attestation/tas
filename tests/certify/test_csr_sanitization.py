@@ -16,7 +16,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, rsa
 from cryptography.x509.oid import NameOID
 
-from tas.cert.csr import sanitize_csr
+from tas.certify.csr import sanitize_csr
 
 
 def generate_csr(
@@ -233,7 +233,7 @@ def test_csr_sanitization_logs_invalid_san_counts(caplog):
         email_addresses=["invalid@bad_domain", "valid@example.com"],
     )
 
-    with caplog.at_level(logging.DEBUG, logger="tas.cert.csr"):
+    with caplog.at_level(logging.DEBUG, logger="tas.certify.csr"):
         _, _, _, dns_names, _, email_addresses = sanitize_csr(csr_bytes, ["RSA"], 10000)
 
     assert dns_names == []
@@ -262,7 +262,7 @@ def test_csr_sanitization_caps_invalid_san_debug_logs(caplog):
     invalid_dns_names = [f"*.invalid-{index}.example.com" for index in range(4)]
     csr_bytes = generate_csr(cn="svc.local", dns_names=invalid_dns_names)
 
-    with caplog.at_level(logging.DEBUG, logger="tas.cert.csr"):
+    with caplog.at_level(logging.DEBUG, logger="tas.certify.csr"):
         sanitize_csr(csr_bytes, ["RSA"], 10000)
 
     warning_messages = [

@@ -51,7 +51,10 @@ def gpu_vm_verify(
 
     Returns:
         is_verified (bool): True if verification is successful, False otherwise.
-        key_id (str or None): The key ID (None for GPU verification).
+        claims (GpuClaims or None): The extracted GPU attestation claims on
+            success, None on failure. Callers that verify evidence once and
+            apply per-policy claims separately reuse these (see
+            :func:`gpu_validate_claims`).
         verify_error (str or None): An error message if verification fails, None otherwise.
     """
     log_function_entry("gpu_vm_verify")
@@ -96,7 +99,46 @@ def gpu_vm_verify(
         )
 
     log_function_exit("gpu_vm_verify", "verified" if ok else "failed")
-    return ok, None, error
+    return ok, claims, error
+
+
+def gpu_validate_claims(gpu_policy, claims, device_index=0):
+    """
+    Validate already-extracted GPU claims against a certify-policy's GPU rules.
+
+    Split out from :func:`gpu_vm_verify` so the expensive evidence verification
+    can run once while each certify-policy's (cheap, in-memory) claims check is
+    applied independently — e.g. across the members of a domain-policy.
+
+    Parameters:
+        gpu_policy (dict): NVIDIA GPU policy dict (with "authorization-rules").
+        claims (GpuClaims): Claims returned by :func:`gpu_vm_verify`.
+        device_index (int): GPU device index, for error messages.
+
+    Returns:
+        is_valid (bool): True if the claims satisfy the policy, False otherwise.
+        verify_error (str or None): An error message on failure, None otherwise.
+    """
+    if not GPU_PYTOOLS_AVAILABLE:
+        return (
+            False,
+            (
+                f"GPU {device_index}: nvidia_pytools package is not installed. "
+                "Install with: pip install nvidia_pytools"
+            ),
+        )
+
+    try:
+        policy = nvidia_pytools.AttestationPolicy(policy_data=gpu_policy)
+    except Exception as e:
+        return False, f"GPU {device_index}: invalid GPU policy: {e}"
+
+    try:
+        policy.validate_claims(claims)
+    except Exception as e:
+        return False, f"GPU {device_index}: policy validation failed: {e}"
+
+    return True, None
 
 
 def gpu_get_collateral_refs(gpu_evidence_b64, device_index=0):

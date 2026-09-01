@@ -51,10 +51,10 @@ def _parse_spiffe_uri(spiffe_uri: str) -> tuple[str, str, uuid.UUID]:
     path_parts = [part for part in parts.path.split("/") if part]
     if len(path_parts) != 2:
         raise RenewalError(
-            "Current cerftificate's SPIFFE URI must be spiffe://<trust-domain>/<policy-domain>/<uuid>"
+            "Current cerftificate's SPIFFE URI must be spiffe://<trust-domain>/<domain-policy>/<uuid>"
         )
 
-    policy_domain, uuid_str = path_parts
+    domain_policy, uuid_str = path_parts
     try:
         parsed_uuid = uuid.UUID(uuid_str, version=4)
     except ValueError as exc:
@@ -66,7 +66,7 @@ def _parse_spiffe_uri(spiffe_uri: str) -> tuple[str, str, uuid.UUID]:
             "Current cerftificate's SPIFFE URI UUID must be a canonical v4 UUID"
         )
 
-    return parts.netloc, policy_domain, parsed_uuid
+    return parts.netloc, domain_policy, parsed_uuid
 
 
 def _verify_signed_by_ca(cert: x509.Certificate, ca_cert_der: bytes) -> None:
@@ -104,7 +104,7 @@ def _verify_signed_by_ca(cert: x509.Certificate, ca_cert_der: bytes) -> None:
 def validate_renewal_cert(
     renew_cert_pem: str,
     ca_info: dict,
-    requested_policy_domain: str,
+    requested_domain_policy: str,
     trust_domain: str,
     csr_spki_der: bytes,
     clock_skew_seconds: int,
@@ -136,15 +136,15 @@ def validate_renewal_cert(
     uri_sans = san.get_values_for_type(x509.UniformResourceIdentifier)
     if len(uri_sans) != 1:
         raise RenewalError("Current certificate must contain exactly one URI SAN")
-    prior_trust_domain, prior_policy_domain, prior_uuid = _parse_spiffe_uri(uri_sans[0])
+    prior_trust_domain, prior_domain_policy, prior_uuid = _parse_spiffe_uri(uri_sans[0])
 
     if prior_trust_domain != trust_domain:
         raise RenewalError(
             "Current certificate SPIFFE trust domain does not match TAS trust domain"
         )
-    if prior_policy_domain != requested_policy_domain:
+    if prior_domain_policy != requested_domain_policy:
         raise RenewalError(
-            "Current certificate policy domain does not match requested policy-domain"
+            "Current certificate policy domain does not match requested domain-policy"
         )
 
     skew = timedelta(seconds=clock_skew_seconds)

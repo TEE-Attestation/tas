@@ -50,7 +50,7 @@ class BaseConfig:
     # Certificate issuance feature toggle. Disabled by default until the
     # certificate flow is production-ready. When False, the /alphav1/certify
     # route is not registered and the cert provider plugin is not initialized.
-    TAS_CERT_ENABLED = False
+    TAS_CERTIFY_ENABLED = False
     TAS_CERT_PLUGIN = "tas_cert_local"
     TAS_CERT_PLUGIN_PREFIX = "tas_cert"
     TAS_CERT_CONFIG_FILE = "./config/cert_local_config.yaml"
@@ -61,6 +61,9 @@ class BaseConfig:
     TAS_CERT_EVIDENCE_DIGEST_MAX_ENTRIES = 17
     TAS_CERT_EVIDENCE_DIGEST_MAX_BYTES = 4096
     TAS_CERT_ALLOWED_KEY_TYPES = ["RSA", "EC"]
+    # Max certify-policies a domain-policy may reference (bounds the certify
+    # OR-evaluation loop).
+    TAS_CERTIFY_MAX_POLICIES = 32
     TAS_OID_ROOT = "1.3.6.1.4.1.65993"
 
     # Rate limiting (Flask-Limiter native keys)

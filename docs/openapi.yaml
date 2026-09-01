@@ -571,7 +571,7 @@ paths:
               - nonce
               - tee-evidence
               - csr
-              - policy-domain
+              - domain-policy
               properties:
                 tee-type:
                   type: string
@@ -583,7 +583,7 @@ paths:
                 csr:
                   type: string
                   format: base64
-                policy-domain:
+                domain-policy:
                   type: string
                 gpu-evidence:
                   type: array

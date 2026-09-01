@@ -129,7 +129,7 @@ def compute_evidence_digests(
 
 
 def build_tas_extensions(
-    policy_domain: str,
+    domain_policy: str,
     policy_digest_hex: str,
     platforms_verified: Sequence[str],
     evidence_digests_json: str,
@@ -137,7 +137,7 @@ def build_tas_extensions(
     """Construct TAS custom certificate extensions.
 
     Args:
-        policy_domain: Domain name used for policy evaluation.
+        domain_policy: Domain name used for policy evaluation.
         policy_digest_hex: Hex SHA-512 digest representing evaluated policy.
         platforms_verified: Verified platform identifiers.
         evidence_digests_json: Canonical JSON digest document for evidence.
@@ -151,7 +151,7 @@ def build_tas_extensions(
         {
             "extn_id": TAS_OID_DOMAIN,
             "critical": False,
-            "extn_value": core.UTF8String(policy_domain).dump(),
+            "extn_value": core.UTF8String(domain_policy).dump(),
         }
     )
 

@@ -222,13 +222,15 @@ app.register_blueprint(client_bp)
 
 # Certificate issuance is gated behind a feature flag and disabled by default
 # until the flow is production-ready.
-cert_enabled = app.config.get("TAS_CERT_ENABLED", False)
-if cert_enabled:
-    from tas.cert.routes import cert_bp
+certify_enabled = app.config.get("TAS_CERTIFY_ENABLED", False)
+if certify_enabled:
+    from tas.certify.policy_routes import certify_policy_bp
+    from tas.certify.routes import certify_bp
 
-    app.register_blueprint(cert_bp)
+    app.register_blueprint(certify_bp)
+    app.register_blueprint(certify_policy_bp)
 else:
-    logger.info("Certificate issuance disabled by TAS_CERT_ENABLED=false")
+    logger.info("Certificate issuance disabled by TAS_CERTIFY_ENABLED=false")
 
 # Rate limiting storage resolution
 _rl_storage_uri, _rl_storage_options, _rl_mode = resolve_ratelimit_storage(
@@ -246,8 +248,8 @@ if app.config.get("TAS_TRUST_X_FORWARDED_FOR"):
 
 # Apply rate limit to all client blueprint routes
 limiter = setup_rate_limiter(app, client_bp, _rl_storage_uri, _rl_storage_options)
-if cert_enabled:
-    limiter.limit(app.config.get("TAS_CLIENT_RATE_LIMIT", "200 per minute"))(cert_bp)
+if certify_enabled:
+    limiter.limit(app.config.get("TAS_CLIENT_RATE_LIMIT", "200 per minute"))(certify_bp)
 
 
 # log discovered plugins for debugging
@@ -321,7 +323,7 @@ except Exception as e:
     raise RuntimeError(f"Failed to open KBM client connection: {e}")
 
 # Initialize Cert plugin
-if cert_enabled:
+if certify_enabled:
     tas_cert_plugin = None
     for plugin_name in discovered_plugins:
         if plugin_name == app.config["TAS_CERT_PLUGIN"]:
@@ -358,7 +360,7 @@ if cert_enabled:
         logger.error(f"Failed to initialize Cert Provider client: {e}")
         raise RuntimeError(f"Failed to open Cert Provider client connection: {e}")
 else:
-    logger.info("Skipping Cert Provider initialization (TAS_CERT_ENABLED=false)")
+    logger.info("Skipping Cert Provider initialization (TAS_CERTIFY_ENABLED=false)")
 
 if __name__ == "__main__":
     # Note: This is a simplified example and should not be used in production
