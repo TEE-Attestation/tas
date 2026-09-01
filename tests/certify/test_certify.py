@@ -30,11 +30,11 @@ from cryptography.x509.oid import (
 
 os.environ["TAS_API_KEY"] = "a" * 64
 os.environ["TAS_MANAGEMENT_API_KEY"] = "b" * 64
-os.environ["TAS_CERT_ENABLED"] = "true"
+os.environ["TAS_CERTIFY_ENABLED"] = "true"
 
 from app import app as flask_app
-from tests.cert.cert_test_utils import API_HEADERS, build_certify_payload, get_nonce
-from tests.cert.test_csr_sanitization import generate_csr
+from tests.certify.cert_test_utils import API_HEADERS, build_certify_payload, get_nonce
+from tests.certify.test_csr_sanitization import generate_csr
 
 TAS_EVIDENCE_DIGESTS_OID = ObjectIdentifier("1.3.6.1.4.1.65993.5")
 
@@ -52,13 +52,13 @@ def _post_certify(test_client, payload, headers=API_HEADERS):
 
 
 def test_certify_flow(test_client, monkeypatch):
-    import tas.cert.routes as cert_routes
+    import tas.certify.routes as cert_routes
 
     def mock_vm_verify(*args, **kwargs):
         assert kwargs.get("report_data_binding") is True
         return True, "key_id_123", None
 
-    monkeypatch.setattr(cert_routes, "vm_verify", mock_vm_verify)
+    monkeypatch.setattr(cert_routes, "domain_verify", mock_vm_verify)
 
     nonce = get_nonce(test_client)
     csr_bytes = generate_csr(cn="test-workload.local")
@@ -106,11 +106,11 @@ def test_certify_flow(test_client, monkeypatch):
 def test_certify_emits_canonical_evidence_digests(test_client, monkeypatch):
     import hashlib
 
-    import tas.cert.routes as cert_routes
+    import tas.certify.routes as cert_routes
 
     monkeypatch.setattr(
         cert_routes,
-        "vm_verify",
+        "domain_verify",
         lambda *args, **kwargs: (True, "key_id_123", None),
     )
 
@@ -176,10 +176,10 @@ def test_certify_emits_canonical_evidence_digests(test_client, monkeypatch):
 
 
 def test_certify_nonce_replay_rejected(test_client, monkeypatch):
-    import tas.cert.routes as cert_routes
+    import tas.certify.routes as cert_routes
 
     monkeypatch.setattr(
-        cert_routes, "vm_verify", lambda *args, **kwargs: (True, "key_id_123", None)
+        cert_routes, "domain_verify", lambda *args, **kwargs: (True, "key_id_123", None)
     )
 
     nonce = get_nonce(test_client)
@@ -195,10 +195,10 @@ def test_certify_nonce_replay_rejected(test_client, monkeypatch):
 
 
 def test_certify_expired_nonce_rejected(test_client, monkeypatch):
-    import tas.cert.routes as cert_routes
+    import tas.certify.routes as cert_routes
 
     monkeypatch.setattr(
-        cert_routes, "vm_verify", lambda *args, **kwargs: (True, "key_id_123", None)
+        cert_routes, "domain_verify", lambda *args, **kwargs: (True, "key_id_123", None)
     )
 
     nonce = get_nonce(test_client)
@@ -238,11 +238,11 @@ def test_certify_requires_valid_api_key(test_client, headers):
 
 
 def test_certify_attestation_failure_rejected(test_client, monkeypatch):
-    import tas.cert.routes as cert_routes
+    import tas.certify.routes as cert_routes
 
     monkeypatch.setattr(
         cert_routes,
-        "vm_verify",
+        "domain_verify",
         lambda *args, **kwargs: (False, None, "Attestation verification failed"),
     )
 
@@ -258,10 +258,10 @@ def test_certify_attestation_failure_rejected(test_client, monkeypatch):
 
 
 def test_certify_cn_fallback_when_missing(test_client, monkeypatch):
-    import tas.cert.routes as cert_routes
+    import tas.certify.routes as cert_routes
 
     monkeypatch.setattr(
-        cert_routes, "vm_verify", lambda *args, **kwargs: (True, "key_id_123", None)
+        cert_routes, "domain_verify", lambda *args, **kwargs: (True, "key_id_123", None)
     )
 
     nonce = get_nonce(test_client)
@@ -278,10 +278,10 @@ def test_certify_cn_fallback_when_missing(test_client, monkeypatch):
 
 
 def test_certify_rejects_evidence_digest_limit_overflow(test_client, monkeypatch):
-    import tas.cert.routes as cert_routes
+    import tas.certify.routes as cert_routes
 
     monkeypatch.setattr(
-        cert_routes, "vm_verify", lambda *args, **kwargs: (True, "key_id_123", None)
+        cert_routes, "domain_verify", lambda *args, **kwargs: (True, "key_id_123", None)
     )
 
     original_limit = test_client.application.config.get(
@@ -316,7 +316,7 @@ def test_certify_rejects_invalid_csr_base64(test_client, bad_csr):
 
 @pytest.mark.parametrize(
     "missing_field",
-    ["tee-type", "nonce", "tee-evidence", "csr", "policy-domain"],
+    ["tee-type", "nonce", "tee-evidence", "csr", "domain-policy"],
 )
 def test_certify_missing_required_field(test_client, missing_field):
     csr_bytes = generate_csr(cn="test-workload.local")
@@ -332,14 +332,14 @@ def test_certify_missing_required_field(test_client, missing_field):
 
 
 def test_certify_certificate_renders_with_openssl(test_client, monkeypatch):
-    import tas.cert.routes as cert_routes
+    import tas.certify.routes as cert_routes
 
     if shutil.which("openssl") is None:
         pytest.skip("openssl is not installed in test environment")
 
     monkeypatch.setattr(
         cert_routes,
-        "vm_verify",
+        "domain_verify",
         lambda *args, **kwargs: (True, "key_id_123", None),
     )
 
@@ -379,11 +379,11 @@ def test_certify_certificate_renders_with_openssl(test_client, monkeypatch):
 
 def test_certify_spiffe_id_x509_svid_compliance(test_client, monkeypatch):
     """Validate issued leaf certificate against X509-SVID SPIFFE ID rules."""
-    import tas.cert.routes as cert_routes
+    import tas.certify.routes as cert_routes
 
     monkeypatch.setattr(
         cert_routes,
-        "vm_verify",
+        "domain_verify",
         lambda *args, **kwargs: (True, "key_id_123", None),
     )
 
@@ -438,12 +438,12 @@ def test_ca_chain_spiffe_trust_domain_matches_leaf(test_client, monkeypatch):
     from cryptography import x509
     from cryptography.x509.oid import ExtensionOID
 
-    import tas.cert.routes as cert_routes
+    import tas.certify.routes as cert_routes
 
     def mock_vm_verify(*args, **kwargs):
         return True, "key_id_123", None
 
-    monkeypatch.setattr(cert_routes, "vm_verify", mock_vm_verify)
+    monkeypatch.setattr(cert_routes, "domain_verify", mock_vm_verify)
 
     nonce = get_nonce(test_client)
     csr_bytes = generate_csr(cn="test-workload.local")
@@ -492,12 +492,12 @@ def test_certify_ca_chain_renders_with_openssl(test_client, monkeypatch):
     from cryptography import x509
     from cryptography.hazmat.primitives import serialization
 
-    import tas.cert.routes as cert_routes
+    import tas.certify.routes as cert_routes
 
     def mock_vm_verify(*args, **kwargs):
         return True, "key_id_123", None
 
-    monkeypatch.setattr(cert_routes, "vm_verify", mock_vm_verify)
+    monkeypatch.setattr(cert_routes, "domain_verify", mock_vm_verify)
 
     nonce = get_nonce(test_client)
     csr_bytes = generate_csr(cn="test-workload.local")
@@ -562,11 +562,11 @@ def _issue_leaf(
     email_addresses=None,
 ):
     """Helper: drive a successful certify call and return the parsed JSON."""
-    import tas.cert.routes as cert_routes
+    import tas.certify.routes as cert_routes
 
     monkeypatch.setattr(
         cert_routes,
-        "vm_verify",
+        "domain_verify",
         lambda *args, **kwargs: (True, "key_id_123", None),
     )
 
@@ -833,25 +833,25 @@ def _issue_leaf_with_key(
     monkeypatch,
     cn="svid.local",
     dns_names=None,
-    policy_domain="production",
+    domain_policy="production",
 ):
     """Like _issue_leaf, but also returns the matching PKCS#8 private key PEM.
 
     py-spiffe's ``X509Svid.parse`` requires the leaf certificate together with
     its private key, so we generate the CSR with ``return_key=True``.
     """
-    import tas.cert.routes as cert_routes
+    import tas.certify.routes as cert_routes
 
     monkeypatch.setattr(
         cert_routes,
-        "vm_verify",
+        "domain_verify",
         lambda *args, **kwargs: (True, "key_id_123", None),
     )
 
     nonce = get_nonce(test_client)
     csr_bytes, key_pem = generate_csr(cn=cn, dns_names=dns_names, return_key=True)
     csr_b64 = base64.b64encode(csr_bytes).decode("ascii")
-    payload = build_certify_payload(nonce, csr_b64, **{"policy-domain": policy_domain})
+    payload = build_certify_payload(nonce, csr_b64, **{"domain-policy": domain_policy})
 
     response = _post_certify(test_client, payload)
     assert response.status_code == 200, response.json
@@ -898,7 +898,7 @@ def test_spiffe_leaf_parses_as_x509_svid(test_client, monkeypatch):
     from spiffe import X509Svid
 
     result, key_pem = _issue_leaf_with_key(
-        test_client, monkeypatch, cn="svid.local", policy_domain="production"
+        test_client, monkeypatch, cn="svid.local", domain_policy="production"
     )
 
     svid = X509Svid.parse(result["certificate"].encode("ascii"), key_pem)
@@ -915,7 +915,7 @@ def test_spiffe_leaf_uri_san_obeys_spiffe_grammar(test_client, monkeypatch):
     from spiffe import SpiffeId
 
     result, _ = _issue_leaf_with_key(
-        test_client, monkeypatch, cn="grammar.local", policy_domain="production"
+        test_client, monkeypatch, cn="grammar.local", domain_policy="production"
     )
 
     leaf = x509.load_pem_x509_certificate(result["certificate"].encode("ascii"))

@@ -12,7 +12,7 @@ The endpoint issues a TAS-signed workload certificate after successful attestati
 
 ## Availability
 
-The certificate API is only available when `TAS_CERT_ENABLED` is enabled. If certificate support is disabled, the certificate routes are not registered and the certificate plugin is not initialised.
+The certificate API is only available when `TAS_CERTIFY_ENABLED` is enabled. If certificate support is disabled, the certificate routes are not registered and the certificate plugin is not initialised.
 
 ## Request Requirements
 
@@ -22,14 +22,35 @@ A request must be JSON and must include:
 - `nonce`: fresh nonce from GET /alphav1/nonce
 - `tee-evidence`: base64-encoded TEE attestation evidence
 - `csr`: base64-encoded certificate signing request
-- `policy-domain`: requested policy domain
+- `domain-policy`: id of the domain-policy the workload is requesting a certificate for
 
 Optional fields:
 
+- `policy-id`: id of a specific certify-policy to evaluate against. When present, TAS evaluates the attestation only against this policy, which must be one of the certify-policies referenced by the requested domain-policy. When absent, TAS tries every referenced certify-policy until one passes.
 - `gpu-evidence`: GPU evidence list. Each entry must include `type`, `evidence`, and non-negative `device-index`
 - `renew_cert`: PEM-encoded current TAS certificate for renewal
 
 All requests require API authentication.
+
+## Domain Policies and Certify Policies
+
+The certify flow evaluates attestation against a **domain-policy** rather than a single policy id. These objects live in the `domain-policy:{id}` and `certify-policy:{id}` Redis keyspaces, kept completely separate from the secret-release `policy:*` store.
+
+- A **domain-policy** is an object, identified by a `policy_id`, that groups certify-policy ids by TEE type under `certify_policies`, e.g. `{"amd-sev-snp": ["sev-baseline"], "intel-tdx": ["tdx-baseline"]}`. Its `policy_id` is what the agent supplies as `domain-policy` and what appears in the issued SPIFFE ID. At verification only the ids listed for the request's `tee-type` are considered.
+- A **certify-policy** is an attestation policy with the same structure as a secret-release policy (metadata, `validation_rules`, optional `components`), but used exclusively by the certify flow.
+
+A request succeeds when the attestation satisfies **at least one** certify-policy listed for its `tee-type` (logical OR). Certify-policies registered under a mismatched TEE type — or whose declared `policy_type` does not match the evidence — are skipped rather than evaluated, which avoids needless retrievals and failures. Supplying the optional `policy-id` narrows evaluation to a single certify-policy, which must be listed for the request's `tee-type`.
+
+Both object types honour `TAS_ENFORCE_SIGNED_POLICIES` and are verified against `TAS_TRUSTED_KEYS`, exactly like secret-release policies. They are managed through dedicated, management-authenticated endpoints that are registered only when `TAS_CERTIFY_ENABLED` is set:
+
+- `POST   /management/domain-policy/v0/store`
+- `GET    /management/domain-policy/v0/get/<name>`
+- `GET    /management/domain-policy/v0/list`
+- `DELETE /management/domain-policy/v0/delete/<name>`
+- `POST   /management/certify-policy/v0/store`
+- `GET    /management/certify-policy/v0/get/<id>`
+- `GET    /management/certify-policy/v0/list`
+- `DELETE /management/certify-policy/v0/delete/<id>`
 
 ## CSR Requirements
 
@@ -47,15 +68,15 @@ TAS ignores unsupported CSR subject fields. DNS SAN entries are kept only when t
 
 For a normal certificate request, omit `renew_cert`.
 
-TAS validates the request, checks the nonce, sanitises the CSR, verifies attestation evidence, records evidence digest metadata, builds TAS certificate extensions, and signs a new certificate through the active certificate plugin.
+TAS validates the request, checks the nonce, sanitises the CSR, resolves the named domain-policy, and verifies the attestation evidence against its referenced certify-policies (stopping at the first that passes, or only the `policy-id` one when supplied). It then records evidence digest metadata, builds TAS certificate extensions, and signs a new certificate through the active certificate plugin.
 
 The issued certificate receives a new SPIFFE ID:
 
 ```text
-spiffe://<TAS_CERT_TRUST_DOMAIN>/<policy-domain>/<uuid>
+spiffe://<TAS_CERT_TRUST_DOMAIN>/<domain-policy>/<uuid>
 ```
 
-`TAS_CERT_TRUST_DOMAIN` is the configured TAS trust domain. `policy-domain` is the policy domain from the request and attestation verification. `uuid` is a new UUID v4 for standard issuance.
+`TAS_CERT_TRUST_DOMAIN` is the configured TAS trust domain. `domain-policy` is the policy domain from the request and attestation verification. `uuid` is a new UUID v4 for standard issuance.
 
 ## Certificate Contents
 
@@ -77,7 +98,7 @@ The issued certificate contains:
 
 For renewal, include `renew_cert`.
 
-Renewal does not skip attestation. TAS still requires a fresh nonce, fresh attestation evidence, a valid CSR, and a matching `policy-domain`.
+Renewal does not skip attestation. TAS still requires a fresh nonce, fresh attestation evidence, a valid CSR, and a matching `domain-policy`.
 
 If renewal validation succeeds, TAS reuses the SPIFFE ID from the current certificate and issues a new certificate.
 
@@ -106,7 +127,7 @@ If any renewal check fails, TAS returns HTTP 400.
   "nonce": "...",
   "tee-evidence": "...base64...",
   "csr": "...base64...",
-  "policy-domain": "staging",
+  "domain-policy": "staging",
   "renew_cert": "-----BEGIN CERTIFICATE-----\\n...\\n-----END CERTIFICATE-----"
 }
 ```
@@ -130,7 +151,7 @@ Common failure responses:
 ## Certificate Issuance Configurations (`TAS_CERT_*`)
 
 TAS uses the following configuration for its Certificate Issuance feature:
-- `TAS_CERT_ENABLED` — Main feature flag for certificate issuance (default: `false`). When `false`, the `/alphav1/certify` route is not registered and the certificate provider plugin is not initialized. Set to `true` to enable the feature once a cert provider is configured. This feature is disabled by default until it is production-ready.
+- `TAS_CERTIFY_ENABLED` — Main feature flag for certificate issuance (default: `false`). When `false`, the `/alphav1/certify` route is not registered and the certificate provider plugin is not initialized. Set to `true` to enable the feature once a cert provider is configured. This feature is disabled by default until it is production-ready.
 - `TAS_CERT_PLUGIN` — Module name for the certificate signing backend (default: `tas_cert_local`).
 - `TAS_CERT_PLUGIN_PREFIX` — Plugin discovery prefix (default: `tas_cert`).
 - `TAS_CERT_CONFIG_FILE` — Configuration file path for the active cert plugin.
@@ -157,6 +178,7 @@ TAS uses the following configuration for its Certificate Issuance feature:
 - `TAS_CERT_TRUST_DOMAIN` — Trust domain used for the URI SAN (default: `example.org`).
 - `TAS_CERT_MAX_CSR_BYTES` — Reject CSRs larger than this byte length (default: 10000).
 - `TAS_CERT_ALLOWED_KEY_TYPES` — Allowed CSR public key algorithms (default: `["RSA", "EC"]`).
+- `TAS_CERTIFY_MAX_POLICIES` — Maximum number of certify-policies a domain-policy may reference; bounds the OR-evaluation loop (default: `32`).
 - `TAS_OID_ROOT` — Custom X.509 extension OID arc (default: `1.3.6.1.4.1.65993`).
 
 ## Notes

@@ -39,16 +39,16 @@ class TestGpuVmVerify:
     @patch("tas.components.gpu_nvidia.nvidia_pytools")
     @patch("tas.components.gpu_nvidia.GPU_PYTOOLS_AVAILABLE", True)
     def test_successful_verification(self, mock_nvidia):
-        """Successful nvidia_pytools verification returns (True, None, None)."""
+        """Successful nvidia_pytools verification returns (True, claims, None)."""
         from tas.components.gpu_nvidia import gpu_vm_verify as direct_verify
 
         mock_claims = MagicMock()
         mock_claims.hwmodel = "H100"
         mock_nvidia.verify_gpu_evidence.return_value = (True, mock_claims, None)
 
-        ok, key_id, err = direct_verify("gpu-nvidia", self.EVIDENCE_B64, 0)
+        ok, claims, err = direct_verify("gpu-nvidia", self.EVIDENCE_B64, 0)
         assert ok is True
-        assert key_id is None
+        assert claims is mock_claims
         assert err is None
         mock_nvidia.verify_gpu_evidence.assert_called_once_with(
             gpu_evidence_b64=self.EVIDENCE_B64,
@@ -692,14 +692,14 @@ class TestVmVerifyGpuPolicy:
         "tas.tas_vm.get_policy_from_redis",
         return_value=(_POLICY_WITH_GPU, "gpu-test-key"),
     )
-    @patch("tas.tas_vm.gpu_vm_verify")
+    @patch("tas.tas_vm.gpu_validate_claims", return_value=(True, None))
+    @patch("tas.tas_vm.gpu_vm_verify", return_value=(True, MagicMock(), None))
     @patch("tas.tas_vm.sev_vm_verify")
-    def test_nvidia_policy_passed_to_gpu_vm_verify(
-        self, mock_sev, mock_gpu, _mock_policy
+    def test_nvidia_policy_applied_to_gpu_claims(
+        self, mock_sev, mock_gpu, mock_validate, _mock_policy
     ):
-        """The NVIDIA policy should be passed to gpu_vm_verify for gpu-nvidia GPUs."""
+        """The NVIDIA policy should be applied to the verified GPU claims."""
         mock_sev.return_value = (True, None)
-        mock_gpu.return_value = (True, None, None)
 
         gpu_evidence = [
             {
@@ -720,22 +720,23 @@ class TestVmVerifyGpuPolicy:
             gpu_list=gpu_evidence,
         )
 
-        # gpu_vm_verify should be called with the nvidia policy
-        call_kwargs = mock_gpu.call_args
-        assert call_kwargs.kwargs["gpu_policy"] == _NVIDIA_GPU_POLICY
+        # Evidence is verified without a policy; the policy is applied to the
+        # resulting claims instead.
+        assert mock_gpu.call_args.kwargs["gpu_policy"] is None
+        assert mock_validate.call_args.args[0] == _NVIDIA_GPU_POLICY
 
     @patch(
         "tas.tas_vm.get_policy_from_redis",
         return_value=(_POLICY_WITH_GPU, "gpu-test-key"),
     )
-    @patch("tas.tas_vm.gpu_vm_verify")
+    @patch("tas.tas_vm.gpu_validate_claims", return_value=(True, None))
+    @patch("tas.tas_vm.gpu_vm_verify", return_value=(True, MagicMock(), None))
     @patch("tas.tas_vm.sev_vm_verify")
-    def test_non_matching_device_type_gets_no_policy(
-        self, mock_sev, mock_gpu, _mock_policy
+    def test_non_matching_device_type_skips_claims_policy(
+        self, mock_sev, mock_gpu, mock_validate, _mock_policy
     ):
-        """GPUs whose device type has no matching policy key get gpu_policy=None."""
+        """GPUs whose device type has no matching policy key skip claims validation."""
         mock_sev.return_value = (True, None)
-        mock_gpu.return_value = (True, None, None)
 
         gpu_evidence = [
             {
@@ -756,8 +757,7 @@ class TestVmVerifyGpuPolicy:
             gpu_list=gpu_evidence,
         )
 
-        call_kwargs = mock_gpu.call_args
-        assert call_kwargs.kwargs["gpu_policy"] is None
+        mock_validate.assert_not_called()
 
 
 # ── gpu_vm_verify with policy tests ────────────────────────────────

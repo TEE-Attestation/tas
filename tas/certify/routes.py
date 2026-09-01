@@ -27,8 +27,9 @@ from flask import Blueprint, Response, current_app, jsonify, request
 from ..auth import authenticate_request
 from ..client_routes import get_nonce_redis
 from ..nonce import validate_nonce
+from ..policy_helper import validate_key_component
 from ..tas_logging import get_logger
-from ..tas_vm import vm_verify
+from ..tas_vm import domain_verify
 from .csr import sanitize_csr
 from .issuer import (
     assemble_certificate,
@@ -40,7 +41,7 @@ from .renewal import RenewalError, validate_renewal_cert
 
 logger = get_logger(__name__)
 
-cert_bp = Blueprint("cert", __name__)
+certify_bp = Blueprint("certify", __name__)
 
 
 TEE_EVIDENCE_TYPES = {
@@ -96,7 +97,7 @@ def _build_evidence_entries(
     return entries, platforms_verified
 
 
-@cert_bp.route("/alphav1/certify", methods=["POST"])
+@certify_bp.route("/alphav1/certify", methods=["POST"])
 def certify() -> tuple[Response, int]:
     """Issue or renew an attestation-bound workload certificate.
 
@@ -105,7 +106,8 @@ def certify() -> tuple[Response, int]:
     - nonce
     - tee-evidence
     - csr
-    - policy-domain
+    - domain-policy
+    - policy-id (optional)
     - gpu-evidence (optional)
     - renew_cert (optional)
 
@@ -125,16 +127,31 @@ def certify() -> tuple[Response, int]:
     nonce = data.get("nonce")
     tee_evidence = data.get("tee-evidence")
     csr_b64 = data.get("csr")
-    policy_domain = data.get("policy-domain")
+    domain_policy = data.get("domain-policy")
+    requested_policy_id = data.get("policy-id")
     gpu_evidence = data.get("gpu-evidence")
     renew_cert = data.get("renew_cert")
 
-    if not all([tee_type, nonce, tee_evidence, csr_b64, policy_domain]):
+    if not all([tee_type, nonce, tee_evidence, csr_b64, domain_policy]):
         return jsonify({"error": "Missing required fields"}), 400
     if renew_cert is not None and not isinstance(renew_cert, str):
         return jsonify({"error": "renew_cert must be a PEM string"}), 400
     if isinstance(renew_cert, str) and not renew_cert.strip():
         return jsonify({"error": "renew_cert must not be empty"}), 400
+    if requested_policy_id is not None and (
+        not isinstance(requested_policy_id, str) or not requested_policy_id.strip()
+    ):
+        return jsonify({"error": "policy-id must be a non-empty string"}), 400
+
+    # Validate identity components before they become a Redis key / SPIFFE path
+    # segment in the issued certificate.
+    is_valid, error = validate_key_component(domain_policy, "domain-policy")
+    if not is_valid:
+        return jsonify({"error": error}), 400
+    if requested_policy_id is not None:
+        is_valid, error = validate_key_component(requested_policy_id, "policy-id")
+        if not is_valid:
+            return jsonify({"error": error}), 400
 
     try:
         csr_bytes = base64.b64decode(csr_b64, validate=True)
@@ -177,12 +194,13 @@ def certify() -> tuple[Response, int]:
     else:
         binding_key = spki_der
 
-    is_verified, key_id, verify_error = vm_verify(
+    is_verified, key_id, verify_error = domain_verify(
         current_app.extensions["redis"],
         nonce,
         tee_type,
         tee_evidence,
-        policy_domain,
+        domain_policy,
+        requested_policy_id=requested_policy_id,
         wrapping_key=binding_key,
         report_data_binding=True,
         gpu_list=gpu_evidence,
@@ -214,7 +232,7 @@ def certify() -> tuple[Response, int]:
     policy_digest_hex = hashlib.sha512(b'{"allow_all":true}').hexdigest()
 
     tas_exts = build_tas_extensions(
-        policy_domain,
+        domain_policy,
         policy_digest_hex,
         platforms_verified,
         evidence_digests_str,
@@ -236,7 +254,7 @@ def certify() -> tuple[Response, int]:
             spiffe_uuid = validate_renewal_cert(
                 renew_cert,
                 ca_info,
-                policy_domain,
+                domain_policy,
                 trust_domain,
                 spki_der,
                 clock_skew,
@@ -248,7 +266,7 @@ def certify() -> tuple[Response, int]:
     else:
         spiffe_uuid = uuid.uuid4()
 
-    spiffe_uri = f"spiffe://{trust_domain}/{policy_domain}/{spiffe_uuid}"
+    spiffe_uri = f"spiffe://{trust_domain}/{domain_policy}/{spiffe_uuid}"
 
     tbs_der = build_tbs_der(
         spki_der,

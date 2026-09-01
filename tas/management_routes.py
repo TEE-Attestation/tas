@@ -16,10 +16,10 @@ from flask import Blueprint, current_app, jsonify, request
 
 from .auth import authenticate_management_request
 from .policy_helper import (
-    POLICY_KEY_COMPONENT_RE,
+    check_signature_for_store,
     is_policy_signed,
     validate_policy_key,
-    verify_policy_signature,
+    validate_policy_metadata,
 )
 from .tas_logging import get_logger
 
@@ -50,80 +50,21 @@ def store_policy():
         logger.error("Policy data is not a valid JSON object")
         return jsonify({"error": "Policy must be a JSON object"}), 400
 
-    if "metadata" not in policy:
-        logger.error("Policy missing required 'metadata' section")
-        return jsonify({"error": "Policy must contain 'metadata' section"}), 400
+    is_valid, error = validate_policy_metadata(policy)
+    if not is_valid:
+        logger.error(f"Policy metadata validation failed: {error}")
+        return jsonify({"error": error}), 400
 
-    if "validation_rules" not in policy:
-        logger.error("Policy missing required 'validation_rules' section")
-        return jsonify({"error": "Policy must contain 'validation_rules' section"}), 400
+    policy_id = policy["metadata"]["policy_id"]
 
-    metadata = policy["metadata"]
-
-    policy_type = metadata.get("policy_type")
-    if not policy_type:
-        logger.error("Policy metadata missing policy_type")
-        return (
-            jsonify({"error": "Policy type is required in metadata (e.g. SEV, TDX)"}),
-            400,
-        )
-
-    key_id = metadata.get("key_id")
-    if not key_id:
-        logger.error("Policy metadata missing key_id")
-        return jsonify({"error": "Key ID is required in metadata"}), 400
-
-    policy_id = metadata.get("policy_id")
-    if not policy_id:
-        logger.error("Policy metadata missing policy_id")
-        return jsonify({"error": "Policy ID is required in metadata"}), 400
-
-    if not POLICY_KEY_COMPONENT_RE.match(str(policy_id)):
-        logger.error(f"Invalid policy_id: {policy_id}")
-        return (
-            jsonify(
-                {
-                    "error": "Invalid policy_id. Use only alphanumeric characters, hyphens, underscores, and dots"
-                }
-            ),
-            400,
-        )
-
-    is_signed = is_policy_signed(policy)
-    if is_signed and "signed_data" in policy.get("signature", {}):
-        logger.error(f"Policy {policy_id} uses deprecated 'signed_data' field")
-        return (
-            jsonify(
-                {
-                    "error": "The 'signed_data' field in the signature object is deprecated and no longer supported. "
-                    "Please re-sign the policy so that the signature covers all top-level fields."
-                }
-            ),
-            400,
-        )
-
-    warning_message = None
-    if not is_signed:
-        logger.warning(f"Policy {policy_id} is not signed")
-        warning_message = (
-            "WARNING: Policy is not signed and cannot be verified for integrity"
-        )
-        if current_app.config.get("TAS_ENFORCE_SIGNED_POLICIES", True):
-            logger.error("Unsigned policies are not allowed by configuration")
-            return (
-                jsonify(
-                    {"error": "Unsigned policies are not allowed by configuration"}
-                ),
-                400,
-            )
-    else:
-        logger.info(f"Policy {policy_id} is signed")
-        if not verify_policy_signature(
-            policy, current_app.config.get("TAS_TRUSTED_KEYS", [])
-        ):
-            logger.error("Policy signature verification failed")
-            return jsonify({"error": "Policy signature verification failed"}), 400
-        logger.info("Policy signature verification successful")
+    is_valid, error, warning_message = check_signature_for_store(
+        policy,
+        current_app.config.get("TAS_ENFORCE_SIGNED_POLICIES", True),
+        current_app.config.get("TAS_TRUSTED_KEYS", []),
+    )
+    if not is_valid:
+        logger.error(f"Policy signature check failed: {error}")
+        return jsonify({"error": error}), 400
 
     try:
         redis_client = _get_redis()

@@ -38,7 +38,7 @@ TAS_POLICY_TRUST: "./certs/policy"
 TAS_ENFORCE_SIGNED_POLICIES: true
 
 # Certificate issuance feature (disabled by default until production-ready)
-#TAS_CERT_ENABLED: false
+#TAS_CERTIFY_ENABLED: false
 
 # Backend used to verify NVIDIA GPU evidence:
 #   "remote" - NVIDIA Remote Attestation Service (NRAS)

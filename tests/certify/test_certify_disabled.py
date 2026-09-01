@@ -6,7 +6,7 @@
 #
 # This file is part of the TEE Attestation Service.
 #
-# Verifies that certificate issuance is disabled by default (TAS_CERT_ENABLED
+# Verifies that certificate issuance is disabled by default (TAS_CERTIFY_ENABLED
 # defaults to False). The app module registers blueprints and initializes the
 # cert provider at import time, so the disabled path is exercised in a clean
 # subprocess to avoid mutating the shared app singleton used by other tests.
@@ -22,11 +22,11 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fi
 
 def test_cert_disabled_by_default_in_base_config():
     """The feature flag defaults to off in the base configuration."""
-    assert BaseConfig.TAS_CERT_ENABLED is False
+    assert BaseConfig.TAS_CERTIFY_ENABLED is False
 
 
 def test_certify_route_absent_and_plugin_skipped_when_disabled():
-    """With TAS_CERT_ENABLED unset, the certify route is not registered and the
+    """With TAS_CERTIFY_ENABLED unset, the certify route is not registered and the
     cert provider is not initialized."""
     snippet = (
         "import app as a;"
@@ -43,7 +43,7 @@ def test_certify_route_absent_and_plugin_skipped_when_disabled():
     env["PYTHONPATH"] = REPO_ROOT
     env["TAS_API_KEY"] = "a" * 64
     env["TAS_MANAGEMENT_API_KEY"] = "b" * 64
-    env.pop("TAS_CERT_ENABLED", None)
+    env.pop("TAS_CERTIFY_ENABLED", None)
 
     result = subprocess.run(
         [sys.executable, "-c", snippet],

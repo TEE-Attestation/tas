@@ -20,10 +20,10 @@ from cryptography.x509.oid import ExtensionOID, NameOID
 
 os.environ["TAS_API_KEY"] = "a" * 64
 os.environ["TAS_MANAGEMENT_API_KEY"] = "b" * 64
-os.environ["TAS_CERT_ENABLED"] = "true"
+os.environ["TAS_CERTIFY_ENABLED"] = "true"
 
 from app import app as flask_app
-from tests.cert.cert_test_utils import API_HEADERS, build_certify_payload, get_nonce
+from tests.certify.cert_test_utils import API_HEADERS, build_certify_payload, get_nonce
 
 
 @pytest.fixture
@@ -35,11 +35,11 @@ def test_client():
 
 
 def _mock_attestation(monkeypatch):
-    import tas.cert.routes as cert_routes
+    import tas.certify.routes as cert_routes
 
     monkeypatch.setattr(
         cert_routes,
-        "vm_verify",
+        "domain_verify",
         lambda *args, **kwargs: (True, "key_id_123", None),
     )
 
@@ -156,7 +156,7 @@ def test_certify_renewal_rejects_key_mismatch(test_client, monkeypatch):
     assert "public key" in response.json["error"]
 
 
-def test_certify_renewal_rejects_policy_domain_mismatch(test_client, monkeypatch):
+def test_certify_renewal_rejects_domain_policy_mismatch(test_client, monkeypatch):
     private_key = _new_key()
     prior_cert = _issue_cert(test_client, monkeypatch, private_key)
 
@@ -164,7 +164,7 @@ def test_certify_renewal_rejects_policy_domain_mismatch(test_client, monkeypatch
         get_nonce(test_client),
         _csr_b64(private_key),
         renew_cert=prior_cert,
-        **{"policy-domain": "prod"},
+        **{"domain-policy": "prod"},
     )
     response = _post_certify(test_client, payload)
     assert response.status_code == 400
