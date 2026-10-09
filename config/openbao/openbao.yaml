@@ -1,50 +1,71 @@
 # OpenBao KBM Plugin Configuration (plugins/tas_kbm_openbao.py)
-# Precedence: config file > environment variables > built-in defaults
+# Precedence: (lowest priority -> highest priority) built-in defaults -> configuration file -> environment variables
 
-# OpenBao / HashiCorp Vault server endpoint.
-# Fallback env vars: BAO_ADDR, then VAULT_ADDR. (Dev example: "http://127.0.0.1:8200")
-url: "https://127.0.0.1:8200"
+# OpenBao server endpoint.
+# Environment override: BAO_URL. (Dev example: "http://127.0.0.1:8200")
+BAO_URL: "https://127.0.0.1:8200"
 
-# Authentication Token
-# Precedence: token -> BAO_TOKEN -> VAULT_TOKEN -> token_file.
-# Pass via env var substitution (default) or hardcode for testing:
-token: "${BAO_TOKEN}"
-# Alternatively, read token from a secure mounted file (e.g., Kubernetes Secret or ramfs):
-# token_file: "/run/secrets/bao_token"
+# Authentication
+# BAO_AUTH_METHOD: token (default) or approle
+BAO_AUTH_METHOD: "token"
+
+# Token mode:
+# BAO_TOKEN: ""
+# BAO_TOKEN_FILE: ""
+
+# AppRole mode:
+# (set BAO_AUTH_METHOD to approle; all values below are optional in token mode)
+# BAO_ROLE_ID: ""
+# BAO_SECRET_ID: ""
+# BAO_SECRET_ID_FILE: "" # If both BAO_SECRET_ID and BAO_SECRET_ID_FILE are set, the file variable takes precedence
+# BAO_APPROLE_MOUNT: "approle"  # default: "approle"
+# BAO_TOKEN_RENEW_ON_401: true  # default: true
+# Environment overrides: BAO_AUTH_METHOD, BAO_ROLE_ID, BAO_SECRET_ID,
+# BAO_SECRET_ID_FILE, BAO_APPROLE_MOUNT, BAO_TOKEN_RENEW_ON_401.
 
 # KV Secrets Engine
-# mount_point: path where the KV engine is mounted (e.g., "secret", "kv")
-# kv_version: KV engine version: 1 (legacy /v1/secret/key) or 2 (default /v1/secret/data/key)
-# Fallback env var: BAO_KV_VERSION
-mount_point: "secret"
-kv_version: 2
+# BAO_MOUNT_POINT: path where the KV engine is mounted (e.g., "secret", "kv")
+# Environment override: BAO_MOUNT_POINT
+# BAO_KV_VERSION: KV engine version: 1 (legacy /v1/secret/key) or 2 (default /v1/secret/data/key)
+# Environment override: BAO_KV_VERSION
+BAO_MOUNT_POINT: "secret"
+BAO_KV_VERSION: 2
 
 # Name of the JSON key containing the secret payload.
-# Secret field is required. TAS will return an error if the field is not found in the secret payload.
-secret_field: "secret"
+# BAO_SECRET_FIELD is required. TAS returns an error if the field is missing from the secret payload.
+# Environment override: BAO_SECRET_FIELD
+BAO_SECRET_FIELD: "secret"
+
+# Maximum size of token and AppRole secret ID files, in bytes (default: 1024).
+# The reader permits one additional byte, for example for a trailing newline.
+# Environment override: BAO_MAX_SECRET_FILE_BYTES
+# BAO_MAX_SECRET_FILE_BYTES: 1024
 
 # TLS / SSL Verification
-# Set verify_ssl to false ONLY in local development/debug environments.
-# ca_bundle: optional custom CA certificate bundle for self-signed or internal CAs.
-verify_ssl: true
-ca_bundle: "/opt/openbao/certs/ca.crt"
+# Set BAO_VERIFY_SSL to false ONLY in local development/debug environments.
+# When BAO_CA_BUNDLE is unset, the system CA trust store is used. Deployments using a private
+# or self-signed CA should set BAO_CA_BUNDLE to the mounted CA bundle file.
+# Environment overrides: BAO_CA_BUNDLE.
+BAO_VERIFY_SSL: true
+
+# BAO_CA_BUNDLE: ""
 
 # HTTP request timeout in seconds.
-# Fallback env var: BAO_REQUESTS_TIMEOUT
-requests_timeout: 30
+# Environment override: BAO_REQUESTS_TIMEOUT
+BAO_REQUESTS_TIMEOUT: 30
 
 # HTTP Retry Strategy for transient network errors and status codes (429, 500, 502, 503, 504).
-# retry_backoff_factor: exponential backoff multiplier (e.g. 0.05 -> 0.1s, 0.2s, etc.)
-# Fallback env vars: BAO_RETRY_TOTAL, BAO_RETRY_BACKOFF_FACTOR
-retry_total: 3
-retry_backoff_factor: 0.05
+# BAO_RETRY_BACKOFF_FACTOR: exponential backoff multiplier (e.g. 0.05 -> 0.1s, 0.2s, etc.)
+# Environment overrides: BAO_RETRY_TOTAL, BAO_RETRY_BACKOFF_FACTOR
+BAO_RETRY_TOTAL: 3
+BAO_RETRY_BACKOFF_FACTOR: 0.05
 
 # Connection Pool Settings
-# pool_connections: Number of distinct host connection pools cached by urllib3 (per worker process).
-# pool_maxsize: Maximum concurrent connections per pool. With pool_block=True, this is a hard
+# BAO_POOL_CONNECTIONS: Number of distinct host connection pools cached by urllib3 (per worker process).
+# BAO_POOL_MAXSIZE: Maximum concurrent connections per pool. With pool_block=True, this is a hard
 # upper bound; connection acquisition blocks when all connections in the pool are checked out.
 # Note: Connection limits apply per TAS worker process. Total concurrent connections to OpenBao
-# across a deployment will be (worker_processes * pool_maxsize).
-# Fallback env vars: BAO_POOL_CONNECTIONS, BAO_POOL_MAXSIZE
-pool_connections: 10
-pool_maxsize: 20
+# across a deployment will be (worker_processes * BAO_POOL_MAXSIZE).
+# Environment overrides: BAO_POOL_CONNECTIONS, BAO_POOL_MAXSIZE
+BAO_POOL_CONNECTIONS: 10
+BAO_POOL_MAXSIZE: 20
