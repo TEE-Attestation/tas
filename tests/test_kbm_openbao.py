@@ -1689,3 +1689,177 @@ class TestOpenBaoKBM(unittest.TestCase):
                 self.assertIsNone(client._last_reauth_error)
             finally:
                 client.close()
+
+
+class TestOpenBaoAutoCreate(unittest.TestCase):
+    @staticmethod
+    def _response(status, payload=None):
+        response = MagicMock(status_code=status)
+        if payload is not None:
+            response.json.return_value = payload
+        return response
+
+    def _client(self, **kwargs):
+        return _OpenBaoClient(
+            url="https://bao.example:8200",
+            create_key_if_absent=True,
+            **kwargs,
+        )
+
+    @patch("requests.Session.get")
+    def test_disabled_feature_does_not_create(self, mock_get):
+        mock_get.return_value = self._response(404)
+        client = _OpenBaoClient(url="https://bao.example:8200")
+        try:
+            with self.assertRaisesRegex(ValueError, "Secret not found"):
+                client.get_secret("missing")
+        finally:
+            client.close()
+
+    @patch("requests.Session.get")
+    @patch("requests.Session.post")
+    def test_missing_secret_is_created_as_string_and_returned_as_bytes(
+        self, mock_post, mock_get
+    ):
+        import plugins.tas_kbm_openbao as openbao_module
+
+        secret = "secret-secret"
+        mock_get.return_value = self._response(404)
+        mock_post.return_value = self._response(200)
+        client = self._client()
+
+        try:
+            with patch.object(
+                openbao_module._secrets,
+                "token_urlsafe",
+                return_value=secret,
+            ):
+                self.assertEqual(client.get_secret("new-key"), secret.encode("ascii"))
+
+            mock_post.assert_called_once_with(
+                "https://bao.example:8200/v1/secret/data/new-key",
+                json={
+                    "options": {"cas": 0},
+                    "data": {"secret": secret},
+                },
+                verify=True,
+                timeout=30,
+                allow_redirects=False,
+            )
+            mock_get.assert_called_once()
+        finally:
+            client.close()
+
+    @patch("requests.Session.get")
+    @patch("requests.Session.post")
+    def test_non_404_does_not_attempt_creation(self, mock_post, mock_get):
+        mock_get.return_value = self._response(403)
+        client = self._client()
+        try:
+            with self.assertRaises(OpenBaoResponseError):
+                client.get_secret("forbidden-key")
+            mock_post.assert_not_called()
+        finally:
+            client.close()
+
+    @patch("requests.Session.get")
+    @patch("requests.Session.post")
+    def test_cas_conflict_returns_competing_value(self, mock_post, mock_get):
+        import plugins.tas_kbm_openbao as openbao_module
+
+        winner = b"w" * 32
+        stored = {
+            "_tas_encoding": "base64",
+            "value": base64.b64encode(winner).decode("ascii"),
+        }
+        mock_get.side_effect = [
+            self._response(404),
+            self._response(200, {"data": {"data": {"secret": stored}}}),
+        ]
+        mock_post.return_value = self._response(
+            400,
+            {"errors": ["check-and-set parameter did not match the current version"]},
+        )
+        client = self._client()
+
+        try:
+            with patch.object(
+                openbao_module._secrets, "token_urlsafe", return_value="losing-secret"
+            ):
+                self.assertEqual(client.get_secret("raced-key"), winner)
+            self.assertEqual(mock_get.call_count, 2)
+        finally:
+            client.close()
+
+    @patch("requests.Session.get")
+    def test_invalid_generated_secret_envelope_is_rejected(self, mock_get):
+        malformed_envelopes = (
+            {"_tas_encoding": "base64", "value": "not-base64"},
+            {"_tas_encoding": "base64", "value": 123},
+            {"_tas_encoding": "base64", "value": "YWJj", "extra": "field"},
+        )
+        for envelope in malformed_envelopes:
+            with self.subTest(envelope=envelope):
+                mock_get.return_value = self._response(
+                    200, {"data": {"data": {"secret": envelope}}}
+                )
+                client = _OpenBaoClient(url="https://bao.example:8200")
+                try:
+                    with self.assertRaises(OpenBaoResponseError):
+                        client.get_secret("key")
+                finally:
+                    client.close()
+
+    def test_creation_requires_kv_v2(self):
+        with self.assertRaisesRegex(ValueError, "requires OpenBao KV v2"):
+            _OpenBaoClient(
+                url="https://bao.example:8200",
+                kv_version=1,
+                create_key_if_absent=True,
+            )
+
+    def test_factory_parses_environment_opt_in(self):
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "BAO_URL": "https://bao.example:8200",
+                    "BAO_CREATE_KEY_IF_ABSENT": "true",
+                },
+                clear=True,
+            ),
+            patch("plugins.tas_kbm_openbao._load_config_file", return_value={}),
+        ):
+            client = kbm_open_client_connection()
+        try:
+            self.assertTrue(client.create_key_if_absent)
+        finally:
+            client.close()
+
+    def test_factory_rejects_invalid_creation_flag(self):
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "BAO_URL": "https://bao.example:8200",
+                    "BAO_CREATE_KEY_IF_ABSENT": "sometimes",
+                },
+                clear=True,
+            ),
+            patch("plugins.tas_kbm_openbao._load_config_file", return_value={}),
+            self.assertRaisesRegex(ValueError, "create_key_if_absent"),
+        ):
+            kbm_open_client_connection()
+
+    @patch("requests.Session.get")
+    @patch("requests.Session.post")
+    def test_unexpected_cas_write_failure_is_response_error(self, mock_post, mock_get):
+        mock_get.return_value = self._response(404)
+        mock_post.return_value = self._response(400, {"errors": ["invalid request"]})
+        client = self._client()
+        try:
+            with self.assertRaises(OpenBaoResponseError):
+                client.get_secret("key")
+            mock_get.assert_called_once()
+        finally:
+            client.close()
