@@ -52,10 +52,15 @@ The `GET /management/status` endpoint (requires management API key) returns:
 |-------------|-----|--------------------------|
 | `policy:<type>:<id>` | None | **Lost forever** — must be re-uploaded manually |
 | `certs:*`, `crl:*`, `tdx_collateral:*` | 48 h | Re-fetched automatically on cache miss |
-| Nonces | 120 s | Ephemeral by design — no persistence needed |
+| `nonce:<64-hex>` | 120 s | Ephemeral by design — no persistence needed |
 
 Policies are the critical data. Without persistence, a Redis restart silently
 destroys all stored attestation policies.
+
+Nonces are isolated under the `nonce:` key namespace (`nonce:<64 lowercase hex>`)
+and created with `SET ... EX ... NX`. Validation validates the canonical 64-char
+lowercase hexadecimal format and atomically consumes `nonce:<challenge>` with
+`GETDEL` (with no fallback to legacy unprefixed keys).
 
 ## How to disable
 

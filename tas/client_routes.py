@@ -52,14 +52,17 @@ def get_nonce():
         return auth_response
 
     # Generate a random nonce
-    nonce = secrets.token_hex(32)  # Generate a 64-character nonce
-    logger.debug(f"Generated nonce: {nonce}")
+    # secrets.token_hex(32) generates 32 random bytes
+    # and encodes them as a 64-character hexadecimal
+    # string (2 hex characters per byte)
+    nonce = secrets.token_hex(32)
+    logger.info(f"Generated nonce: {nonce}")
 
     # Store the nonce in Redis
     redis_client = get_nonce_redis()
     expiration = current_app.config["TAS_NONCE_EXPIRATION_SECONDS"]
     store_nonce(redis_client, nonce, expiration)
-    logger.info("Nonce generated and stored successfully")
+    logger.info(f"Nonce generated and stored successfully: {nonce}")
 
     return jsonify({"nonce": nonce})
 
@@ -89,7 +92,6 @@ def get_secret():
         logger.error("Secret request missing nonce field")
         return jsonify({"error": "Nonce is required"}), 400
 
-    nonce = str(nonce).strip('"')
     nonce_client = get_nonce_redis()
     is_valid, error_message = validate_nonce(nonce_client, nonce)
     if not is_valid:

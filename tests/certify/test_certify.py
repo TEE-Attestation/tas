@@ -203,11 +203,11 @@ def test_certify_expired_nonce_rejected(test_client, monkeypatch):
 
     nonce = get_nonce(test_client)
 
-    # Simulate expiry by deleting the nonce before certify uses it.
+    # Simulate expiry by deleting the namespaced nonce key before certify uses it.
     nonce_client = flask_app.extensions.get(
         "redis_ephemeral", flask_app.extensions["redis"]
     )
-    nonce_client.delete(nonce)
+    nonce_client.delete(f"nonce:{nonce}")
 
     csr_b64 = base64.b64encode(generate_csr(cn="expired-test.local")).decode("ascii")
     payload = build_certify_payload(nonce, csr_b64)
@@ -215,6 +215,42 @@ def test_certify_expired_nonce_rejected(test_client, monkeypatch):
     response = _post_certify(test_client, payload)
     assert response.status_code == 403
     assert response.json["error"] == "Invalid or expired nonce"
+
+
+@pytest.mark.parametrize(
+    "bad_nonce",
+    [
+        "policy:domain:staging",
+        "A" * 64,
+        "a" * 63,
+        12345,
+        ["a" * 64],
+    ],
+)
+def test_certify_malformed_or_policy_nonce_preserves_redis_keys(
+    test_client, monkeypatch, bad_nonce
+):
+    import tas.certify.routes as cert_routes
+
+    monkeypatch.setattr(
+        cert_routes, "domain_verify", lambda *args, **kwargs: (True, "key_id_123", None)
+    )
+
+    nonce_client = flask_app.extensions.get(
+        "redis_ephemeral", flask_app.extensions["redis"]
+    )
+    nonce_client.set("policy:domain:staging", '{"metadata":{"policy_id":"staging"}}')
+
+    csr_b64 = base64.b64encode(generate_csr(cn="bad-nonce-test.local")).decode("ascii")
+    payload = build_certify_payload(bad_nonce, csr_b64)
+
+    response = _post_certify(test_client, payload)
+    assert response.status_code == 403
+    assert response.json["error"] == "Invalid or expired nonce"
+    assert nonce_client.get("policy:domain:staging") in (
+        '{"metadata":{"policy_id":"staging"}}',
+        b'{"metadata":{"policy_id":"staging"}}',
+    )
 
 
 @pytest.mark.parametrize(
