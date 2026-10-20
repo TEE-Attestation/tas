@@ -14,6 +14,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+from unittest.mock import MagicMock
 from urllib.parse import urlsplit
 
 import pytest
@@ -33,6 +34,11 @@ os.environ["TAS_MANAGEMENT_API_KEY"] = "b" * 64
 os.environ["TAS_CERTIFY_ENABLED"] = "true"
 
 from app import app as flask_app
+from tas.policy_store import (
+    DOMAIN_POLICY_NAMESPACE,
+    PolicyStore,
+    PolicyStoreUnavailable,
+)
 from tests.certify.cert_test_utils import API_HEADERS, build_certify_payload, get_nonce
 from tests.certify.test_csr_sanitization import generate_csr
 
@@ -101,6 +107,28 @@ def test_certify_flow(test_client, monkeypatch):
     # Subject CN is preserved from CSR when provided.
     cn_attrs = cert.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
     assert cn_attrs[0].value == "test-workload.local"
+
+
+def test_certify_policy_store_outage_returns_500_without_signing(
+    test_client, monkeypatch
+):
+    policy_store = MagicMock(spec=PolicyStore)
+    policy_store.get.side_effect = PolicyStoreUnavailable()
+    monkeypatch.setitem(flask_app.extensions, "policy_store", policy_store)
+    signer = MagicMock()
+    monkeypatch.setitem(flask_app.extensions, "cert_sign", signer)
+
+    nonce = get_nonce(test_client)
+    csr_b64 = base64.b64encode(generate_csr(cn="outage.test")).decode("ascii")
+    response = _post_certify(
+        test_client,
+        build_certify_payload(nonce, csr_b64),
+    )
+
+    assert response.status_code == 500
+    assert response.json == {"error": "Internal server error"}
+    policy_store.get.assert_called_once_with(DOMAIN_POLICY_NAMESPACE, "staging")
+    signer.assert_not_called()
 
 
 def test_certify_emits_canonical_evidence_digests(test_client, monkeypatch):
@@ -200,7 +228,7 @@ def test_certify_accepts_json_quoted_nonce(test_client, monkeypatch):
 
     seen = {}
 
-    def mock_domain_verify(redis_client, nonce, *args, **kwargs):
+    def mock_domain_verify(policy_store, redis_client, nonce, *args, **kwargs):
         seen["nonce"] = nonce
         return True, "key_id_123", None
 

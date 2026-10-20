@@ -46,7 +46,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y redis-server iproute2 psmisc
+          sudo apt-get install -y redis-server postgresql postgresql-client iproute2 psmisc
           redis-server --version
           # Assert Redis >= 6.2 (required for GETDEL)
           REDIS_VER=$(redis-server --version | grep -oP 'v=\K[0-9]+\.[0-9]+')

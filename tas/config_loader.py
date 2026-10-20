@@ -38,6 +38,10 @@ KNOWN_TAS_KEYS = {
     "TAS_REDIS_PORT",
     "TAS_REDIS_PASSWORD",
     "TAS_REDIS_PERSISTENCE",
+    "TAS_POLICY_BACKEND",
+    "TAS_POSTGRES_DSN",
+    "TAS_POSTGRES_CONNECT_TIMEOUT_SECONDS",
+    "TAS_POSTGRES_STATEMENT_TIMEOUT_SECONDS",
     "TAS_PLUGIN_PREFIX",
     "TAS_KBM_CONFIG_FILE",
     "TAS_KBM_PLUGIN",
@@ -228,6 +232,7 @@ def apply_tas_env_overrides(app):
         "TAS_MANAGEMENT_API_KEY",
         "TAS_EPHEMERAL_REDIS_URI",
         "TAS_EPHEMERAL_REDIS_PASSWORD",
+        "TAS_POSTGRES_DSN",
     }
     direct_overrides = []
     for key in KNOWN_TAS_KEYS:
@@ -362,6 +367,36 @@ def load_configuration(app):
     if isinstance(gpu_max, bool) or not isinstance(gpu_max, int) or gpu_max < 1:
         logger.error(f"Invalid TAS_GPU_MAX_EVIDENCE_ENTRIES: {gpu_max!r}")
         raise RuntimeError("TAS_GPU_MAX_EVIDENCE_ENTRIES must be a positive integer")
+
+    # Validate policy storage backend configuration
+    policy_backend = app.config.get("TAS_POLICY_BACKEND", "redis")
+    if not isinstance(policy_backend, str) or policy_backend not in (
+        "redis",
+        "postgresql",
+    ):
+        logger.error(f"Unsupported TAS_POLICY_BACKEND configured: {policy_backend!r}")
+        raise RuntimeError(
+            f"Unsupported TAS_POLICY_BACKEND={policy_backend!r}; "
+            "expected 'redis' or 'postgresql'"
+        )
+    if policy_backend == "postgresql":
+        postgres_dsn = app.config.get("TAS_POSTGRES_DSN", "")
+        if not isinstance(postgres_dsn, str) or not postgres_dsn.strip():
+            logger.error(
+                "TAS_POSTGRES_DSN is not set for TAS_POLICY_BACKEND='postgresql'"
+            )
+            raise RuntimeError(
+                "TAS_POSTGRES_DSN is required when TAS_POLICY_BACKEND='postgresql'"
+            )
+
+    for key in (
+        "TAS_POSTGRES_CONNECT_TIMEOUT_SECONDS",
+        "TAS_POSTGRES_STATEMENT_TIMEOUT_SECONDS",
+    ):
+        timeout = app.config.get(key)
+        if isinstance(timeout, bool) or not isinstance(timeout, int) or timeout < 1:
+            logger.error(f"Invalid {key}: {timeout!r}")
+            raise RuntimeError(f"{key} must be a positive integer")
 
     logger.debug("Loading trusted keys for policy verification")
     if "TAS_POLICY_TRUST" in app.config:

@@ -27,6 +27,7 @@ def app():
     test_app = Flask(__name__)
     test_app.config["TESTING"] = True
     test_app.extensions["redis"] = MagicMock(name="redis")
+    test_app.extensions["policy_store"] = MagicMock(name="policy_store")
     test_app.extensions["kbm_client"] = MagicMock(name="kbm_client")
     test_app.extensions["kbm_get_secret"] = MagicMock(name="kbm_get_secret")
     test_app.register_blueprint(client_bp)
@@ -364,7 +365,7 @@ def test_combined_policy_controls_secret_release(app, client, failure):
         "validation_rules": {},
         "components": {"gpu": {"gpu-nvidia": gpu_policy}},
     }
-    app.extensions["redis"].get.return_value = json.dumps(policy)
+    app.extensions["policy_store"].get.return_value = json.dumps(policy)
     app.extensions["kbm_get_secret"].return_value = "wrapped-combined-secret"
     body = _request_body()
     body["policy-id"] = "combined-policy"
@@ -397,7 +398,9 @@ def test_combined_policy_controls_secret_release(app, client, failure):
     ):
         response = client.post("/kb/v0/get_secret", json=body)
 
-    app.extensions["redis"].get.assert_called_once_with("policy:combined-policy")
+    app.extensions["policy_store"].get.assert_called_once_with(
+        "policy", "combined-policy"
+    )
     gpu.assert_called_once()
     if failure:
         assert response.status_code == 400
@@ -435,7 +438,7 @@ def test_secret_checks_report_data_binding(app, client, report_binding):
         report_data = hashlib.sha512(nonce + b"other-wrapping-key").digest()
     body["tee-evidence"] = base64.b64encode(report_data).decode()
     app.config["TAS_ENFORCE_SIGNED_POLICIES"] = False
-    app.extensions["redis"].get.return_value = json.dumps(
+    app.extensions["policy_store"].get.return_value = json.dumps(
         {"metadata": {"key_id": "bound-secret"}, "validation_rules": {}}
     )
     app.extensions["kbm_get_secret"].return_value = "wrapped-bound-secret"
@@ -485,7 +488,7 @@ def test_secret_accepts_quoted_agent_nonce_and_binds_unquoted(app, client):
     app.config["TAS_ENFORCE_SIGNED_POLICIES"] = False
     redis_client = app.extensions["redis"]
     redis_client.getdel.return_value = "1"
-    redis_client.get.return_value = json.dumps(
+    app.extensions["policy_store"].get.return_value = json.dumps(
         {"metadata": {"key_id": "bound-secret"}, "validation_rules": {}}
     )
     app.extensions["kbm_get_secret"].return_value = "wrapped-bound-secret"

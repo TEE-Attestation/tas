@@ -197,6 +197,7 @@ def certify() -> tuple[Response, int]:
         binding_key = spki_der
 
     is_verified, key_id, verify_error = domain_verify(
+        current_app.extensions["policy_store"],
         current_app.extensions["redis"],
         nonce,
         tee_type,

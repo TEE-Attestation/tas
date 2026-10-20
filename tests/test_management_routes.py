@@ -15,6 +15,7 @@ from flask import Flask
 
 from tas.auth import init_client_auth, init_management_auth
 from tas.management_routes import management_bp
+from tas.policy_store import RedisPolicyStore
 
 CLIENT_API_KEY = "a" * 64
 MGMT_API_KEY = "b" * 64
@@ -41,8 +42,11 @@ class FakeRedis:
     def __init__(self):
         self._store = {}
 
-    def set(self, key, value):
+    def set(self, key, value, nx=False):
+        if nx and key in self._store:
+            return None
         self._store[key] = value
+        return True
 
     def get(self, key):
         return self._store.get(key)
@@ -58,8 +62,16 @@ class FakeRedis:
 
         return [k for k in self._store if fnmatch.fnmatch(k, pattern)]
 
+    def scan_iter(self, match="*", count=None):
+        import fnmatch
+
+        return [k for k in list(self._store) if fnmatch.fnmatch(k, match)]
+
     def setex(self, key, ttl, value):
         self._store[key] = value
+
+    def ping(self):
+        return True
 
     def config_get(self, key):
         defaults = {"appendonly": "no"}
@@ -77,6 +89,7 @@ def app():
 
     fake_redis = FakeRedis()
     test_app.extensions["redis"] = fake_redis
+    test_app.extensions["policy_store"] = RedisPolicyStore(fake_redis)
     test_app.extensions["redis_config_rewrite_ok"] = None
 
     init_client_auth(test_app)
@@ -387,6 +400,10 @@ class TestStatusEndpoint:
         data = resp.get_json()
         assert "redis_persistence_active" in data
         assert "config_rewrite_succeeded" in data
+        assert data["policy_storage"] == {
+            "backend": "redis",
+            "reachable": True,
+        }
 
     def test_status_reflects_config_rewrite_ok(self, app, client):
         app.extensions["redis_config_rewrite_ok"] = True

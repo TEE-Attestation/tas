@@ -34,7 +34,7 @@ All requests require API authentication.
 
 ## Domain Policies and Certify Policies
 
-The certify flow evaluates attestation against a **domain-policy** rather than a single policy id. These objects live in the `domain-policy:{id}` and `certify-policy:{id}` Redis keyspaces, kept completely separate from the secret-release `policy:*` store.
+The certify flow evaluates attestation against a **domain-policy** rather than a single policy id. TAS keeps these objects in the `domain-policy` and `certify-policy` namespaces, separate from the secret-release `policy` namespace. In Redis they use the keys `domain-policy:{id}` and `certify-policy:{id}`; in PostgreSQL they are rows in `tas_policies` with `namespace` set to `domain-policy` or `certify-policy`.
 
 - A **domain-policy** is an object, identified by a `policy_id`, that groups certify-policy ids by TEE type under `certify_policies`, e.g. `{"amd-sev-snp": ["sev-baseline"], "intel-tdx": ["tdx-baseline"]}`. Its `policy_id` is what the agent supplies as `domain-policy` and what appears in the issued SPIFFE ID. At verification only the ids listed for the request's `tee-type` are considered.
 - A **certify-policy** is an attestation policy with the same structure as a secret-release policy (metadata, `validation_rules`, optional `components`), but used exclusively by the certify flow.

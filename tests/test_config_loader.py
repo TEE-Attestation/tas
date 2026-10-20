@@ -196,6 +196,43 @@ def test_gpu_settings_defaults(monkeypatch):
     assert app.config["TAS_GPU_MAX_EVIDENCE_ENTRIES"] == 16
 
 
+def test_postgresql_timeout_defaults(monkeypatch):
+    _set_required_keys(monkeypatch)
+    app = new_app()
+    load_configuration(app)
+    assert app.config["TAS_POSTGRES_CONNECT_TIMEOUT_SECONDS"] == 5
+    assert app.config["TAS_POSTGRES_STATEMENT_TIMEOUT_SECONDS"] == 5
+
+
+def test_postgresql_timeout_env_overrides(monkeypatch):
+    _set_required_keys(monkeypatch)
+    monkeypatch.setenv("TAS_POSTGRES_CONNECT_TIMEOUT_SECONDS", "12")
+    monkeypatch.setenv("TAS_POSTGRES_STATEMENT_TIMEOUT_SECONDS", "2")
+    app = new_app()
+    load_configuration(app)
+    assert app.config["TAS_POSTGRES_CONNECT_TIMEOUT_SECONDS"] == 12
+    assert app.config["TAS_POSTGRES_STATEMENT_TIMEOUT_SECONDS"] == 2
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("TAS_POSTGRES_CONNECT_TIMEOUT_SECONDS", "0"),
+        ("TAS_POSTGRES_CONNECT_TIMEOUT_SECONDS", "-1"),
+        ("TAS_POSTGRES_CONNECT_TIMEOUT_SECONDS", "false"),
+        ("TAS_POSTGRES_STATEMENT_TIMEOUT_SECONDS", "0"),
+        ("TAS_POSTGRES_STATEMENT_TIMEOUT_SECONDS", "-1"),
+        ("TAS_POSTGRES_STATEMENT_TIMEOUT_SECONDS", "five"),
+    ],
+)
+def test_postgresql_timeouts_must_be_positive_integers(monkeypatch, key, value):
+    _set_required_keys(monkeypatch)
+    monkeypatch.setenv(key, value)
+    app = new_app()
+    with pytest.raises(RuntimeError, match=f"{key} must be a positive integer"):
+        load_configuration(app)
+
+
 def test_gpu_settings_env_overrides(monkeypatch):
     _set_required_keys(monkeypatch)
     monkeypatch.setenv("TAS_NVIDIA_GPU_VERIFICATION_MODE", "local")
@@ -245,3 +282,54 @@ def test_invalid_gpu_max_evidence_entries_rejected(monkeypatch, bad_max):
         RuntimeError, match="TAS_GPU_MAX_EVIDENCE_ENTRIES must be a positive integer"
     ):
         load_configuration(app)
+
+
+def test_policy_backend_defaults_to_redis(monkeypatch):
+    monkeypatch.setenv("TAS_API_KEY", LONG_API_KEY)
+    monkeypatch.setenv("TAS_MANAGEMENT_API_KEY", LONG_MGMT_KEY)
+    app = new_app()
+    load_configuration(app)
+    assert app.config["TAS_POLICY_BACKEND"] == "redis"
+    assert app.config["TAS_POSTGRES_DSN"] == ""
+
+
+@pytest.mark.parametrize("invalid_backend", ["dual", "migrate", "both", "sqlite", ""])
+def test_policy_backend_rejects_invalid_values(monkeypatch, invalid_backend):
+    monkeypatch.setenv("TAS_API_KEY", LONG_API_KEY)
+    monkeypatch.setenv("TAS_MANAGEMENT_API_KEY", LONG_MGMT_KEY)
+    monkeypatch.setenv("TAS_POLICY_BACKEND", invalid_backend)
+    app = new_app()
+    with pytest.raises(RuntimeError, match="Unsupported TAS_POLICY_BACKEND"):
+        load_configuration(app)
+
+
+def test_postgresql_backend_requires_dsn(monkeypatch):
+    monkeypatch.setenv("TAS_API_KEY", LONG_API_KEY)
+    monkeypatch.setenv("TAS_MANAGEMENT_API_KEY", LONG_MGMT_KEY)
+    monkeypatch.setenv("TAS_POLICY_BACKEND", "postgresql")
+    app = new_app()
+    with pytest.raises(
+        RuntimeError,
+        match="TAS_POSTGRES_DSN is required when TAS_POLICY_BACKEND='postgresql'",
+    ):
+        load_configuration(app)
+
+
+def test_postgresql_dsn_masked_in_debug_logs(monkeypatch, caplog):
+    import logging
+
+    secret_dsn = "postgresql://tas_user:super_secret_pw_999@db.internal:5432/tas"
+    monkeypatch.setenv("TAS_API_KEY", LONG_API_KEY)
+    monkeypatch.setenv("TAS_MANAGEMENT_API_KEY", LONG_MGMT_KEY)
+    monkeypatch.setenv("TAS_POLICY_BACKEND", "postgresql")
+    monkeypatch.setenv("TAS_POSTGRES_DSN", secret_dsn)
+
+    app = new_app()
+    with caplog.at_level(logging.DEBUG, logger="tas"):
+        load_configuration(app)
+
+    assert app.config["TAS_POLICY_BACKEND"] == "postgresql"
+    assert app.config["TAS_POSTGRES_DSN"] == secret_dsn
+    assert "super_secret_pw_999" not in caplog.text
+    assert secret_dsn not in caplog.text
+    assert "TAS_POSTGRES_DSN=***" in caplog.text

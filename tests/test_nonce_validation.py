@@ -295,6 +295,7 @@ def _make_app(with_ephemeral=False):
     )
     primary = MagicMock(name="primary_redis")
     app.extensions["redis"] = primary
+    app.extensions["policy_store"] = MagicMock(name="policy_store")
     if with_ephemeral:
         ephemeral = MagicMock(name="ephemeral_redis")
         app.extensions["redis_ephemeral"] = ephemeral
@@ -362,7 +363,8 @@ class TestNonceRedisRouting:
             validate_nonce_mock.call_args.args[0] is app.extensions["redis_ephemeral"]
         )
         assert validate_nonce_mock.call_args.args[1] == VALID_NONCE
-        assert vm_verify_mock.call_args.args[0] is app.extensions["redis"]
+        assert vm_verify_mock.call_args.args[0] is app.extensions["policy_store"]
+        assert vm_verify_mock.call_args.args[1] is app.extensions["redis"]
 
     @pytest.mark.parametrize(
         "bad_nonce",
@@ -437,7 +439,7 @@ class TestNonceRedisRouting:
                 replay = client.post("/kb/v0/get_secret", json=request_body)
 
         assert first.status_code == 200
-        assert vm_verify_mock.call_args.args[1] == VALID_NONCE
+        assert vm_verify_mock.call_args.args[2] == VALID_NONCE
         assert fake.get(f"{NONCE_KEY_PREFIX}{VALID_NONCE}") is None
         assert replay.status_code == 401
         assert replay.get_json() == {"error": "Invalid or expired nonce"}

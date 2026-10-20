@@ -7,12 +7,13 @@
 # This file is part of the TEE Attestation Service.
 #
 # Management API for the certify flow's domain-policies and certify-policies.
-# These objects live in the "domain-policy:{id}" and "certify-policy:{id}"
-# Redis keyspaces, kept completely separate from the secret-release "policy:*"
-# store. The blueprint is only registered when TAS_CERTIFY_ENABLED is true.
+# These objects live in the "domain-policy" and "certify-policy" policy
+# namespaces, kept completely separate from the secret-release "policy"
+# namespace. The blueprint is only registered when TAS_CERTIFY_ENABLED is true.
 #
 
 import json
+from contextlib import closing
 
 from flask import Blueprint, current_app, jsonify, request
 
@@ -22,6 +23,11 @@ from ..policy_helper import (
     is_policy_signed,
     validate_key_component,
     validate_policy_metadata,
+)
+from ..policy_store import (
+    CERTIFY_POLICY_NAMESPACE,
+    DOMAIN_POLICY_NAMESPACE,
+    PolicyAlreadyExists,
 )
 from ..tas_logging import get_logger
 from ..tas_vm import POLICY_TYPE_BY_TEE, SUPPORTED_TEE_TYPES
@@ -36,9 +42,9 @@ CERTIFY_POLICY_PREFIX = "certify-policy:"
 UNSIGNED_WARNING = "WARNING: Object is not signed and cannot be verified for integrity"
 
 
-def _get_redis():
-    """Retrieve the Redis client from the application extensions."""
-    return current_app.extensions["redis"]
+def _get_policy_store():
+    """Retrieve the configured policy store from the application extensions."""
+    return current_app.extensions["policy_store"]
 
 
 def _enforce_config():
@@ -85,28 +91,29 @@ def store_certify_policy():
         logger.error(f"Certify-policy signature check failed: {error}")
         return jsonify({"error": error}), 400
 
+    policy_key = f"{CERTIFY_POLICY_PREFIX}{policy_id}"
     try:
-        redis_client = _get_redis()
-        policy_key = f"{CERTIFY_POLICY_PREFIX}{policy_id}"
-        if not redis_client.set(policy_key, json.dumps(policy), nx=True):
-            return (
-                jsonify({"error": f"Certify-policy '{policy_id}' already exists"}),
-                409,
-            )
-        logger.info(f"Stored certify-policy '{policy_key}' in Redis")
+        policy_store = _get_policy_store()
+        policy_store.create(CERTIFY_POLICY_NAMESPACE, policy_id, json.dumps(policy))
+        logger.info(f"Stored certify-policy '{policy_key}'")
 
         response_data = {"message": f"Certify-policy '{policy_id}' stored successfully"}
         if warning_message:
             response_data["warning"] = warning_message
         return jsonify(response_data), 201
+    except PolicyAlreadyExists:
+        return (
+            jsonify({"error": f"Certify-policy '{policy_id}' already exists"}),
+            409,
+        )
     except Exception as e:
         logger.error(f"Error storing certify-policy: {e}")
-        return jsonify({"error": "Failed to store certify-policy in Redis"}), 500
+        return jsonify({"error": "Failed to store certify-policy"}), 500
 
 
 @certify_policy_bp.route("/certify-policy/v0/get/<policy_id>", methods=["GET"])
 def get_certify_policy(policy_id):
-    """Retrieve a certify-policy from Redis."""
+    """Retrieve a certify-policy from the configured policy store."""
     logger.info(f"Received certify-policy get request for '{policy_id}'")
     auth_response = authenticate_management_request()
     if auth_response:
@@ -117,8 +124,8 @@ def get_certify_policy(policy_id):
         return jsonify({"error": error}), 400
 
     try:
-        redis_client = _get_redis()
-        raw = redis_client.get(f"{CERTIFY_POLICY_PREFIX}{policy_id}")
+        policy_store = _get_policy_store()
+        raw = policy_store.get(CERTIFY_POLICY_NAMESPACE, policy_id)
         if not raw:
             return jsonify({"error": f"Certify-policy '{policy_id}' not found"}), 404
 
@@ -129,10 +136,10 @@ def get_certify_policy(policy_id):
         return jsonify(response_data), 200
     except json.JSONDecodeError as e:
         logger.error(f"Error parsing certify-policy JSON: {e}")
-        return jsonify({"error": "Invalid certify-policy data in Redis"}), 500
+        return jsonify({"error": "Invalid certify-policy data in policy store"}), 500
     except Exception as e:
         logger.error(f"Error retrieving certify-policy: {e}")
-        return jsonify({"error": "Failed to retrieve certify-policy from Redis"}), 500
+        return jsonify({"error": "Failed to retrieve certify-policy"}), 500
 
 
 @certify_policy_bp.route("/certify-policy/v0/list", methods=["GET"])
@@ -144,28 +151,28 @@ def list_certify_policies():
         return auth_response
 
     try:
-        redis_client = _get_redis()
+        policy_store = _get_policy_store()
 
         policies = []
-        for key in redis_client.scan_iter(match=f"{CERTIFY_POLICY_PREFIX}*", count=100):
-            raw = redis_client.get(key)
-            if not raw:
-                continue
-            try:
-                policy = json.loads(raw)
-            except json.JSONDecodeError:
-                logger.warning(f"Skipping invalid certify-policy with key: {key}")
-                continue
-            metadata = policy.get("metadata", {})
-            policies.append(
-                {
-                    "policy_id": metadata.get("policy_id", "Unknown"),
-                    "name": metadata.get("name", "Unknown"),
-                    "policy_type": metadata.get("policy_type", "Unknown"),
-                    "key_id": metadata.get("key_id", "Unknown"),
-                    "signed": is_policy_signed(policy),
-                }
-            )
+        with closing(policy_store.list(CERTIFY_POLICY_NAMESPACE)) as documents:
+            for raw in documents:
+                if not raw:
+                    continue
+                try:
+                    policy = json.loads(raw)
+                except json.JSONDecodeError:
+                    logger.warning("Skipping invalid certify-policy in policy store")
+                    continue
+                metadata = policy.get("metadata", {})
+                policies.append(
+                    {
+                        "policy_id": metadata.get("policy_id", "Unknown"),
+                        "name": metadata.get("name", "Unknown"),
+                        "policy_type": metadata.get("policy_type", "Unknown"),
+                        "key_id": metadata.get("key_id", "Unknown"),
+                        "signed": is_policy_signed(policy),
+                    }
+                )
 
         return jsonify({"certify_policies": policies, "count": len(policies)}), 200
     except Exception as e:
@@ -175,7 +182,7 @@ def list_certify_policies():
 
 @certify_policy_bp.route("/certify-policy/v0/delete/<policy_id>", methods=["DELETE"])
 def delete_certify_policy(policy_id):
-    """Delete a certify-policy from Redis."""
+    """Delete a certify-policy from the configured policy store."""
     logger.info(f"Received certify-policy delete request for '{policy_id}'")
     auth_response = authenticate_management_request()
     if auth_response:
@@ -186,18 +193,18 @@ def delete_certify_policy(policy_id):
         return jsonify({"error": error}), 400
 
     try:
-        redis_client = _get_redis()
-        deleted = redis_client.delete(f"{CERTIFY_POLICY_PREFIX}{policy_id}")
-        if deleted == 0:
+        policy_store = _get_policy_store()
+        deleted = policy_store.delete(CERTIFY_POLICY_NAMESPACE, policy_id)
+        if not deleted:
             return jsonify({"error": f"Certify-policy '{policy_id}' not found"}), 404
-        logger.info(f"Deleted certify-policy '{policy_id}' from Redis")
+        logger.info(f"Deleted certify-policy '{policy_id}'")
         return (
             jsonify({"message": f"Certify-policy '{policy_id}' deleted successfully"}),
             200,
         )
     except Exception as e:
         logger.error(f"Error deleting certify-policy: {e}")
-        return jsonify({"error": "Failed to delete certify-policy from Redis"}), 500
+        return jsonify({"error": "Failed to delete certify-policy"}), 500
 
 
 # --------------------------------------------------------------------------- #
@@ -297,12 +304,12 @@ def store_domain_policy():
         logger.error(f"Domain-policy signature check failed: {error}")
         return jsonify({"error": error}), 400
 
+    policy_key = f"{DOMAIN_POLICY_PREFIX}{policy_id}"
     try:
-        redis_client = _get_redis()
-        policy_key = f"{DOMAIN_POLICY_PREFIX}{policy_id}"
+        policy_store = _get_policy_store()
 
         # Referenced certify-policies may be added after the domain-policy; warn
-        # rather than reject so the two stores can be populated in any order.
+        # rather than reject so the two namespaces can be populated in any order.
         # Also warn when a referenced policy's declared type does not match the
         # TEE-type group it is listed under.
         missing = []
@@ -310,7 +317,7 @@ def store_domain_policy():
         for tee_type, ids in policy["certify_policies"].items():
             expected_type = POLICY_TYPE_BY_TEE.get(tee_type)
             for member_id in ids:
-                raw = redis_client.get(f"{CERTIFY_POLICY_PREFIX}{member_id}")
+                raw = policy_store.get(CERTIFY_POLICY_NAMESPACE, member_id)
                 if raw is None:
                     missing.append(member_id)
                     continue
@@ -330,12 +337,8 @@ def store_domain_policy():
                         f"for {tee_type})"
                     )
 
-        if not redis_client.set(policy_key, json.dumps(policy), nx=True):
-            return (
-                jsonify({"error": f"Domain policy '{policy_id}' already exists"}),
-                409,
-            )
-        logger.info(f"Stored domain-policy '{policy_key}' in Redis")
+        policy_store.create(DOMAIN_POLICY_NAMESPACE, policy_id, json.dumps(policy))
+        logger.info(f"Stored domain-policy '{policy_key}'")
 
         warnings = []
         if warning_message:
@@ -355,14 +358,19 @@ def store_domain_policy():
         if warnings:
             response_data["warning"] = " | ".join(warnings)
         return jsonify(response_data), 201
+    except PolicyAlreadyExists:
+        return (
+            jsonify({"error": f"Domain policy '{policy_id}' already exists"}),
+            409,
+        )
     except Exception as e:
         logger.error(f"Error storing domain-policy: {e}")
-        return jsonify({"error": "Failed to store domain policy in Redis"}), 500
+        return jsonify({"error": "Failed to store domain policy"}), 500
 
 
 @certify_policy_bp.route("/domain-policy/v0/get/<policy_id>", methods=["GET"])
 def get_domain_policy(policy_id):
-    """Retrieve a domain-policy from Redis."""
+    """Retrieve a domain-policy from the configured policy store."""
     logger.info(f"Received domain-policy get request for '{policy_id}'")
     auth_response = authenticate_management_request()
     if auth_response:
@@ -373,8 +381,8 @@ def get_domain_policy(policy_id):
         return jsonify({"error": error}), 400
 
     try:
-        redis_client = _get_redis()
-        raw = redis_client.get(f"{DOMAIN_POLICY_PREFIX}{policy_id}")
+        policy_store = _get_policy_store()
+        raw = policy_store.get(DOMAIN_POLICY_NAMESPACE, policy_id)
         if not raw:
             return jsonify({"error": f"Domain policy '{policy_id}' not found"}), 404
 
@@ -385,10 +393,10 @@ def get_domain_policy(policy_id):
         return jsonify(response_data), 200
     except json.JSONDecodeError as e:
         logger.error(f"Error parsing domain-policy JSON: {e}")
-        return jsonify({"error": "Invalid domain policy data in Redis"}), 500
+        return jsonify({"error": "Invalid domain policy data in policy store"}), 500
     except Exception as e:
         logger.error(f"Error retrieving domain-policy: {e}")
-        return jsonify({"error": "Failed to retrieve domain policy from Redis"}), 500
+        return jsonify({"error": "Failed to retrieve domain policy"}), 500
 
 
 @certify_policy_bp.route("/domain-policy/v0/list", methods=["GET"])
@@ -400,27 +408,27 @@ def list_domain_policies():
         return auth_response
 
     try:
-        redis_client = _get_redis()
+        policy_store = _get_policy_store()
 
         domain_policies = []
-        for key in redis_client.scan_iter(match=f"{DOMAIN_POLICY_PREFIX}*", count=100):
-            raw = redis_client.get(key)
-            if not raw:
-                continue
-            try:
-                policy = json.loads(raw)
-            except json.JSONDecodeError:
-                logger.warning(f"Skipping invalid domain-policy with key: {key}")
-                continue
-            metadata = policy.get("metadata", {})
-            domain_policies.append(
-                {
-                    "policy_id": metadata.get("policy_id", "Unknown"),
-                    "description": metadata.get("description", "No description"),
-                    "certify_policies": policy.get("certify_policies", {}),
-                    "signed": is_policy_signed(policy),
-                }
-            )
+        with closing(policy_store.list(DOMAIN_POLICY_NAMESPACE)) as documents:
+            for raw in documents:
+                if not raw:
+                    continue
+                try:
+                    policy = json.loads(raw)
+                except json.JSONDecodeError:
+                    logger.warning("Skipping invalid domain-policy in policy store")
+                    continue
+                metadata = policy.get("metadata", {})
+                domain_policies.append(
+                    {
+                        "policy_id": metadata.get("policy_id", "Unknown"),
+                        "description": metadata.get("description", "No description"),
+                        "certify_policies": policy.get("certify_policies", {}),
+                        "signed": is_policy_signed(policy),
+                    }
+                )
 
         return (
             jsonify(
@@ -435,7 +443,7 @@ def list_domain_policies():
 
 @certify_policy_bp.route("/domain-policy/v0/delete/<policy_id>", methods=["DELETE"])
 def delete_domain_policy(policy_id):
-    """Delete a domain-policy from Redis."""
+    """Delete a domain-policy from the configured policy store."""
     logger.info(f"Received domain-policy delete request for '{policy_id}'")
     auth_response = authenticate_management_request()
     if auth_response:
@@ -446,15 +454,15 @@ def delete_domain_policy(policy_id):
         return jsonify({"error": error}), 400
 
     try:
-        redis_client = _get_redis()
-        deleted = redis_client.delete(f"{DOMAIN_POLICY_PREFIX}{policy_id}")
-        if deleted == 0:
+        policy_store = _get_policy_store()
+        deleted = policy_store.delete(DOMAIN_POLICY_NAMESPACE, policy_id)
+        if not deleted:
             return jsonify({"error": f"Domain policy '{policy_id}' not found"}), 404
-        logger.info(f"Deleted domain-policy '{policy_id}' from Redis")
+        logger.info(f"Deleted domain-policy '{policy_id}'")
         return (
             jsonify({"message": f"Domain policy '{policy_id}' deleted successfully"}),
             200,
         )
     except Exception as e:
         logger.error(f"Error deleting domain-policy: {e}")
-        return jsonify({"error": "Failed to delete domain policy from Redis"}), 500
+        return jsonify({"error": "Failed to delete domain policy"}), 500

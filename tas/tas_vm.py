@@ -74,6 +74,12 @@ except ImportError:
 
 
 from tas.policy_helper import is_policy_signed, verify_policy_signature
+from tas.policy_store import (
+    CERTIFY_POLICY_NAMESPACE,
+    DOMAIN_POLICY_NAMESPACE,
+    POLICY_NAMESPACE,
+    PolicyStore,
+)
 from tas.tas_logging import get_logger, log_function_entry, log_function_exit
 
 # Setup logging for verification output
@@ -563,46 +569,57 @@ def gpu_save_rims_to_redis(redis_client: redis.StrictRedis, rims):
     return ok
 
 
-def get_policy_from_redis(redis_client: redis.StrictRedis, policy_id: str):
+def get_policy(policy_store: PolicyStore, policy_id: str):
     """
-    Fetches the policy from Redis based on the policy id.
+    Fetches and signature-verifies a secret-release policy by ID from the
+    configured policy store.
 
     Parameters:
-        redis_client (redis.StrictRedis): Redis client instance for database operations.
-        policy_id (str): The policy ID to fetch from Redis.
+        policy_store (PolicyStore): Policy store instance.
+        policy_id (str): The policy ID to fetch.
 
     Returns:
-        policy (dict): The policy JSON if found and valid
+        policy (dict): The policy JSON if found and valid.
         key_id (str): The key ID to fetch if the policy used for verification is successful.
 
-
     Raises:
-        ValueError: If policy is not found, invalid JSON, not signed when required, or signature verification fails
+        ValueError: If policy is not found, invalid JSON, not signed when required,
+            or signature verification fails.
+        PolicyStoreUnavailable: If the policy store is unreachable or fails.
     """
-    policy_json = _load_signed_object(redis_client, f"policy:{policy_id}", "Policy")
+    policy_json = _load_signed_object(
+        policy_store, POLICY_NAMESPACE, policy_id, "Policy"
+    )
     return policy_json, policy_json.get("metadata", {}).get("key_id")
 
 
-def _load_signed_object(redis_client: redis.StrictRedis, redis_key: str, kind: str):
-    """Fetch, JSON-parse, and signature-verify a signed object from Redis.
+get_policy_from_redis = get_policy
 
-    Applies the same signing enforcement as :func:`get_policy_from_redis`
-    (``TAS_ENFORCE_SIGNED_POLICIES`` + ``TAS_TRUSTED_KEYS``). Used by the
-    certify flow's separate domain-policy and certify-policy stores.
+
+def _load_signed_object(
+    policy_store: PolicyStore, namespace: str, policy_id: str, kind: str
+):
+    """Fetch, JSON-parse, and signature-verify a signed object from the policy store.
+
+    Applies the same signing enforcement across all three policy namespaces
+    (``TAS_ENFORCE_SIGNED_POLICIES`` + ``TAS_TRUSTED_KEYS``).
 
     Args:
-        redis_client: Redis client instance.
-        redis_key: Fully-qualified Redis key to load.
+        policy_store: Authoritative PolicyStore instance.
+        namespace: Policy namespace ("policy", "certify-policy", or "domain-policy").
+        policy_id: Policy identifier within the namespace.
         kind: Human-readable object kind used in log and error messages.
 
     Raises:
         ValueError: If the object is missing, invalid JSON, unsigned when
             signing is required, or fails signature verification.
+        PolicyStoreUnavailable: If the policy store is unreachable or fails.
     """
-    logger.info(f"Fetching {kind.lower()} from Redis with key: {redis_key}")
-    raw = redis_client.get(redis_key)
+    qualified_key = f"{namespace}:{policy_id}"
+    logger.info(f"Fetching {kind.lower()} from policy store with key: {qualified_key}")
+    raw = policy_store.get(namespace, policy_id)
     if not raw:
-        logger.error(f"{kind} '{redis_key}' not found in Redis")
+        logger.error(f"{kind} '{qualified_key}' not found in policy store")
         raise ValueError(f"{kind} not found")
 
     try:
@@ -614,12 +631,14 @@ def _load_signed_object(redis_client: redis.StrictRedis, redis_key: str, kind: s
     enforce = current_app.config.get("TAS_ENFORCE_SIGNED_POLICIES", True)
     if not is_policy_signed(obj):
         if enforce:
-            logger.error(f"{kind} '{redis_key}' is not signed and signing is required")
+            logger.error(
+                f"{kind} '{qualified_key}' is not signed and signing is required"
+            )
             raise ValueError(f"{kind} not signed")
-        logger.warning(f"{kind} '{redis_key}' is not signed")
+        logger.warning(f"{kind} '{qualified_key}' is not signed")
     elif not enforce:
         logger.warning(
-            f"{kind} '{redis_key}' is signed but signature verification is "
+            f"{kind} '{qualified_key}' is signed but signature verification is "
             "disabled in configuration"
         )
     else:
@@ -627,18 +646,18 @@ def _load_signed_object(redis_client: redis.StrictRedis, redis_key: str, kind: s
         if not verify_policy_signature(
             obj, current_app.config.get("TAS_TRUSTED_KEYS", [])
         ):
-            logger.error(f"{kind} signature verification failed for: '{redis_key}'")
+            logger.error(f"{kind} signature verification failed for: '{qualified_key}'")
             raise ValueError(f"{kind} signature verification failed")
-        logger.info(f"{kind} signature verification successful for: '{redis_key}'")
+        logger.info(f"{kind} signature verification successful for: '{qualified_key}'")
 
     return obj
 
 
-def get_domain_policy_from_redis(redis_client: redis.StrictRedis, policy_id: str):
-    """Fetch and signature-verify a domain-policy by id.
+def get_domain_policy(policy_store: PolicyStore, policy_id: str):
+    """Fetch and signature-verify a domain-policy by id from the policy store.
 
-    Domain-policies live in the ``domain-policy:{id}`` keyspace, separate
-    from the secret-release ``policy:*`` store.
+    Domain-policies live in the ``domain-policy`` namespace, separate from the
+    secret-release ``policy`` namespace.
 
     Returns:
         dict: The domain-policy JSON.
@@ -646,18 +665,22 @@ def get_domain_policy_from_redis(redis_client: redis.StrictRedis, policy_id: str
     Raises:
         ValueError: If missing, invalid, unsigned when required, or the
             signature fails verification.
+        PolicyStoreUnavailable: If the policy store is unreachable or fails.
     """
     return _load_signed_object(
-        redis_client, f"domain-policy:{policy_id}", "Domain policy"
+        policy_store, DOMAIN_POLICY_NAMESPACE, policy_id, "Domain policy"
     )
 
 
-def get_certify_policy_from_redis(redis_client: redis.StrictRedis, policy_id: str):
-    """Fetch and signature-verify a certify-policy by id.
+get_domain_policy_from_redis = get_domain_policy
+
+
+def get_certify_policy(policy_store: PolicyStore, policy_id: str):
+    """Fetch and signature-verify a certify-policy by id from the policy store.
 
     Certify-policies share the structure of secret-release policies but live in
-    the separate ``certify-policy:{id}`` keyspace and are only used by the
-    certify flow.
+    the separate ``certify-policy`` namespace and are only used by the certify
+    flow.
 
     Returns:
         tuple[dict, str | None]: The certify-policy JSON and its metadata key_id.
@@ -665,11 +688,15 @@ def get_certify_policy_from_redis(redis_client: redis.StrictRedis, policy_id: st
     Raises:
         ValueError: If missing, invalid, unsigned when required, or the
             signature fails verification.
+        PolicyStoreUnavailable: If the policy store is unreachable or fails.
     """
     policy_json = _load_signed_object(
-        redis_client, f"certify-policy:{policy_id}", "Certify policy"
+        policy_store, CERTIFY_POLICY_NAMESPACE, policy_id, "Certify policy"
     )
     return policy_json, policy_json.get("metadata", {}).get("key_id")
+
+
+get_certify_policy_from_redis = get_certify_policy
 
 
 def sev_vm_verify(
@@ -893,6 +920,7 @@ def _validate_attestation_inputs(nonce, tee_type, tee_evidence):
 
 
 def vm_verify(
+    policy_store,
     redis_client,
     nonce,
     tee_type,
@@ -903,11 +931,13 @@ def vm_verify(
     gpu_list=None,
 ):
     """
-    Fetches the verification policy by ID from Redis, then delegates the
-    attestation checks to verify.
+    Fetches the verification policy by ID from the policy store, then delegates
+    the attestation checks to verify.
 
     Parameters:
-        policy_id (str): The policy ID to fetch from Redis. All other
+        policy_store (PolicyStore): Policy store instance for policy retrieval.
+        redis_client (redis.StrictRedis): Redis client instance for collateral caches.
+        policy_id (str): The policy ID to fetch from the policy store. All other
             parameters are passed through unchanged to :func:`verify`.
 
     Returns:
@@ -922,7 +952,7 @@ def vm_verify(
         return False, None, input_error
 
     try:
-        policy_json, key_id = get_policy_from_redis(redis_client, policy_id)
+        policy_json, key_id = get_policy(policy_store, policy_id)
     except ValueError as e:
         logger.error(f"Policy fetching failed for: '{policy_id}': {e}")
         return False, None, str(e)
@@ -1384,6 +1414,7 @@ def verify(
 
 
 def domain_verify(
+    policy_store,
     redis_client,
     nonce,
     tee_type,
@@ -1402,10 +1433,11 @@ def domain_verify(
     type), then evaluates the attestation against each in turn, succeeding as
     soon as one passes (logical OR). Members whose declared ``policy_type`` does
     not match the evidence are skipped. The domain-policy and certify-policy
-    stores are separate from the secret-release ``policy:*`` store.
+    namespaces are separate from the secret-release ``policy`` namespace.
 
     Parameters:
-        redis_client (redis.StrictRedis): Redis client instance for database operations.
+        policy_store (PolicyStore): Policy store instance for policy retrieval.
+        redis_client (redis.StrictRedis): Redis client instance for collateral caches.
         nonce (str): The nonce to verify.
         tee_type (str): The type of TEE (e.g., "amd-sev-snp", "intel-tdx").
         tee_evidence (str): Base64-encoded TEE evidence.
@@ -1433,7 +1465,7 @@ def domain_verify(
             return False, None, gpu_input_error
 
     try:
-        domain_policy = get_domain_policy_from_redis(redis_client, domain_policy_id)
+        domain_policy = get_domain_policy(policy_store, domain_policy_id)
     except ValueError as e:
         logger.error(f"Domain policy lookup failed for '{domain_policy_id}': {e}")
         return False, None, str(e)
@@ -1508,7 +1540,7 @@ def domain_verify(
     last_error = None
     for policy_id in candidate_policy_ids:
         try:
-            policy_json, key_id = get_certify_policy_from_redis(redis_client, policy_id)
+            policy_json, key_id = get_certify_policy(policy_store, policy_id)
         except ValueError as e:
             logger.warning(
                 f"Skipping certify policy '{policy_id}' for domain "
