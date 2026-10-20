@@ -23,6 +23,7 @@ from tas.config_loader import load_configuration, resolve_ratelimit_storage
 from tas.error_handlers import register_error_handlers
 from tas.management_routes import management_bp
 from tas.nonce import check_redis_version
+from tas.policy_store import init_policy_store
 from tas.rate_limiter import setup_rate_limiter
 from tas.tas_logging import configure_external_logging, setup_logging
 
@@ -152,9 +153,10 @@ except redis.ConnectionError as e:
 except Exception as e:
     raise RuntimeError(f"An unexpected error occurred while initializing Redis: {e}")
 
-# Configure Redis persistence (AOF + RDB) if enabled
+# Configure Redis persistence (AOF + RDB) if enabled and Redis is the policy store
 _redis_config_rewrite_ok = None  # None = persistence not attempted
-if app.config.get("TAS_REDIS_PERSISTENCE", True):
+_policy_backend = app.config.get("TAS_POLICY_BACKEND", "redis")
+if _policy_backend == "redis" and app.config.get("TAS_REDIS_PERSISTENCE", True):
     try:
         redis_client.config_set("appendonly", "yes")
         redis_client.config_set("appendfsync", "everysec")
@@ -181,12 +183,15 @@ if app.config.get("TAS_REDIS_PERSISTENCE", True):
             "Policies WILL BE LOST if Redis restarts without persistence. "
             "Ensure your Redis server has persistence enabled independently."
         )
-else:
+elif _policy_backend == "redis":
     logger.info("Redis persistence disabled by TAS_REDIS_PERSISTENCE=false")
 
 # Expose Redis client and persistence state to blueprints
 app.extensions["redis"] = redis_client
 app.extensions["redis_config_rewrite_ok"] = _redis_config_rewrite_ok
+
+# Initialize the policy store selected by TAS_POLICY_BACKEND (Redis or PostgreSQL)
+init_policy_store(app, redis_client)
 
 # Initialize optional ephemeral Redis client for nonces and rate-limit counters
 _ephemeral_redis_uri = (app.config.get("TAS_EPHEMERAL_REDIS_URI") or "").strip()
