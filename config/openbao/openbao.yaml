@@ -36,6 +36,12 @@ BAO_KV_VERSION: 2
 # Environment override: BAO_SECRET_FIELD
 BAO_SECRET_FIELD: "secret"
 
+# Create a random URL-safe secret when the requested secret is missing.
+# Generated secrets are stored as plain strings.
+# Requires KV v2. CAS ensures concurrent creates cannot overwrite the winner.
+# Disabled by default. Environment override: BAO_CREATE_KEY_IF_ABSENT.
+BAO_CREATE_KEY_IF_ABSENT: false
+
 # Maximum size of token and AppRole secret ID files, in bytes (default: 1024).
 # The reader permits one additional byte, for example for a trailing newline.
 # Environment override: BAO_MAX_SECRET_FILE_BYTES
