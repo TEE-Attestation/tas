@@ -114,7 +114,7 @@
         "properties": {
           "gpu": {
             "type": "array",
-            "description": "Per-GPU attestation evidence entries",
+            "description": "Per-GPU attestation evidence entries. At most `TAS_GPU_MAX_EVIDENCE_ENTRIES` entries (default 16) are accepted. The entries' `device-index` values must be unique and contiguous from 0 (i.e. cover 0..N-1), in any order.",
             "items": {
               "$ref": "#/components/schemas/GpuEvidence"
             }
@@ -138,7 +138,8 @@
           },
           "device-index": {
             "type": "integer",
-            "description": "GPU device index (used for deterministic ordering of the report_data binding)",
+            "minimum": 0,
+            "description": "Non-negative GPU device index. Across the list the indices must be unique and contiguous from 0 (used for deterministic ordering of the report_data binding)",
             "example": 0
           }
         },

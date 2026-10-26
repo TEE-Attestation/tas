@@ -516,3 +516,58 @@ def test_secret_accepts_quoted_agent_nonce_and_binds_unquoted(app, client):
     app.extensions["kbm_get_secret"].assert_called_once_with(
         app.extensions["kbm_client"], "bound-secret", wrapping_key
     )
+
+
+def _post_secret_with(client, **extra):
+    body = _request_body()
+    body.update(extra)
+    return client.post("/kb/v0/get_secret", json=body)
+
+
+@pytest.mark.parametrize(
+    "component_evidence",
+    ["gpu", 1, True, ["gpu"], [{"gpu": []}]],
+    ids=["str", "int", "bool", "list", "list-of-dict"],
+)
+def test_non_object_component_evidence_returns_400(
+    app, client, patched_route_dependencies, component_evidence
+):
+    """component-evidence must be an object; anything else is a client error.
+
+    Regression test: a non-dict value previously hit ``.get("gpu")`` and raised
+    an AttributeError (HTTP 500).
+    """
+    response = _post_secret_with(client, **{"component-evidence": component_evidence})
+
+    assert response.status_code == 400
+    assert response.get_json() == {"error": "component-evidence must be an object"}
+
+
+def test_object_component_evidence_passes_gpu_list_through(
+    app, client, patched_route_dependencies
+):
+    gpu_list = [{"type": "gpu-nvidia", "evidence": "ZQ==", "device-index": 0}]
+    app.extensions["kbm_get_secret"].return_value = "wrapped-secret"
+
+    with patch(
+        "tas.client_routes.vm_verify", return_value=(True, "key-id", None)
+    ) as mock_verify:
+        response = _post_secret_with(
+            client, **{"component-evidence": {"gpu": gpu_list}}
+        )
+
+    assert response.status_code == 200
+    assert mock_verify.call_args.kwargs["gpu_list"] == gpu_list
+
+
+def test_malformed_gpu_list_is_a_verification_failure_not_500(
+    app, client, patched_route_dependencies
+):
+    """A malformed GPU list reaches vm_verify and is reported as a 400, not a 500."""
+    with patch("tas.client_routes.vm_verify", wraps=None) as mock_verify:
+        mock_verify.return_value = (False, None, "GPU evidence must be a list")
+        response = _post_secret_with(client, **{"component-evidence": {"gpu": 1}})
+
+    assert response.status_code == 400
+    assert response.get_json() == {"error": "TEE verification failed"}
+    assert mock_verify.call_args.kwargs["gpu_list"] == 1

@@ -37,6 +37,11 @@ class BaseConfig:
     TAS_MANAGEMENT_API_KEY_MIN_LENGTH = 64
     TAS_NONCE_EXPIRATION_SECONDS = 120
     TAS_NVIDIA_GPU_VERIFICATION_MODE = "remote"  # "remote" (NRAS) or "local"
+    # Maximum number of GPU evidence entries accepted in a single attestation
+    # request. Bounds the per-request verification work (and, in local mode,
+    # collateral fetches). Raise MAX_CONTENT_LENGTH alongside this for large
+    # multi-GPU hosts.
+    TAS_GPU_MAX_EVIDENCE_ENTRIES = 16
     TAS_REDIS_HOST = "localhost"
     TAS_REDIS_PORT = 6379
     TAS_REDIS_PASSWORD = ""

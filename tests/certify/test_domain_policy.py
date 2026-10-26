@@ -632,9 +632,65 @@ class TestDomainVerify:
                 "prod",
                 wrapping_key=b"key",
                 report_data_binding=True,
-                gpu_list=[{"type": "gpu-nvidia", "device-index": 0}],
+                gpu_list=[{"type": "gpu-nvidia", "device-index": 0, "evidence": "x"}],
             )
         assert result == (True, "key-pol-b", None)
         gpu.assert_called_once()
         assert validate.call_count == 2
         cpu.assert_called_once()
+
+    @pytest.mark.parametrize(
+        "gpu_list, expected_error",
+        [
+            (1, "GPU evidence must be a list"),
+            ("x", "GPU evidence must be a list"),
+            ({"0": {}}, "GPU evidence must be a list"),
+            ([None], "GPU evidence entry 0 must be an object"),
+            (
+                [{"type": "gpu-nvidia", "evidence": "x"}],
+                "GPU evidence entry 0: missing or invalid device-index",
+            ),
+            (
+                [
+                    {"type": "gpu-nvidia", "evidence": "x", "device-index": 0},
+                    {"type": "gpu-nvidia", "evidence": "x", "device-index": 0},
+                ],
+                "GPU evidence entry 1: duplicate device-index",
+            ),
+        ],
+        ids=["int", "str", "dict", "none-entry", "no-index", "dup-index"],
+    )
+    def test_malformed_gpu_list_rejected_before_policy_lookup(
+        self, app, redis, monkeypatch, gpu_list, expected_error
+    ):
+        # Malformed GPU input is rejected before the domain-policy is even
+        # fetched, and never reaches GPU or TEE verification.
+        _seed_domain(redis, "prod", ["pol-a"])
+
+        monkeypatch.setattr(
+            tas_vm,
+            "_verify_gpu_evidence_list",
+            lambda *a, **k: pytest.fail("GPU verification must not run"),
+        )
+        monkeypatch.setattr(
+            tas_vm, "verify", lambda *a, **k: pytest.fail("verify must not run")
+        )
+        monkeypatch.setattr(
+            tas_vm,
+            "get_domain_policy_from_redis",
+            lambda *a, **k: pytest.fail("domain policy must not be fetched"),
+        )
+        with app.app_context():
+            ok, key_id, err = tas_vm.domain_verify(
+                redis,
+                "nonce",
+                "amd-sev-snp",
+                "evidence",
+                "prod",
+                wrapping_key=b"wk",
+                report_data_binding=True,
+                gpu_list=gpu_list,
+            )
+        assert ok is False
+        assert key_id is None
+        assert err == expected_error

@@ -32,6 +32,8 @@ KNOWN_TAS_KEYS = {
     "TAS_MANAGEMENT_API_KEY",
     "TAS_MANAGEMENT_API_KEY_MIN_LENGTH",
     "TAS_NONCE_EXPIRATION_SECONDS",
+    "TAS_NVIDIA_GPU_VERIFICATION_MODE",
+    "TAS_GPU_MAX_EVIDENCE_ENTRIES",
     "TAS_REDIS_HOST",
     "TAS_REDIS_PORT",
     "TAS_REDIS_PASSWORD",
@@ -348,6 +350,18 @@ def load_configuration(app):
         raise RuntimeError(
             f"TAS_MANAGEMENT_API_KEY must be at least {app.config['TAS_MANAGEMENT_API_KEY_MIN_LENGTH']} characters long"
         )
+
+    # Validate GPU attestation settings
+    gpu_mode = app.config.get("TAS_NVIDIA_GPU_VERIFICATION_MODE", "remote")
+    if gpu_mode not in ("remote", "local"):
+        logger.error(f"Invalid TAS_NVIDIA_GPU_VERIFICATION_MODE: {gpu_mode!r}")
+        raise RuntimeError(
+            "TAS_NVIDIA_GPU_VERIFICATION_MODE must be 'remote' or 'local'"
+        )
+    gpu_max = app.config.get("TAS_GPU_MAX_EVIDENCE_ENTRIES", 16)
+    if isinstance(gpu_max, bool) or not isinstance(gpu_max, int) or gpu_max < 1:
+        logger.error(f"Invalid TAS_GPU_MAX_EVIDENCE_ENTRIES: {gpu_max!r}")
+        raise RuntimeError("TAS_GPU_MAX_EVIDENCE_ENTRIES must be a positive integer")
 
     logger.debug("Loading trusted keys for policy verification")
     if "TAS_POLICY_TRUST" in app.config:

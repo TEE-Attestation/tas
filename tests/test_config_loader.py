@@ -181,3 +181,67 @@ def test_management_api_key_min_length(monkeypatch):
     app = new_app()
     with pytest.raises(RuntimeError, match="TAS_MANAGEMENT_API_KEY must be at least"):
         load_configuration(app)
+
+
+def _set_required_keys(monkeypatch):
+    monkeypatch.setenv("TAS_API_KEY", LONG_API_KEY)
+    monkeypatch.setenv("TAS_MANAGEMENT_API_KEY", LONG_MGMT_KEY)
+
+
+def test_gpu_settings_defaults(monkeypatch):
+    _set_required_keys(monkeypatch)
+    app = new_app()
+    load_configuration(app)
+    assert app.config["TAS_NVIDIA_GPU_VERIFICATION_MODE"] == "remote"
+    assert app.config["TAS_GPU_MAX_EVIDENCE_ENTRIES"] == 16
+
+
+def test_gpu_settings_env_overrides(monkeypatch):
+    _set_required_keys(monkeypatch)
+    monkeypatch.setenv("TAS_NVIDIA_GPU_VERIFICATION_MODE", "local")
+    monkeypatch.setenv("TAS_GPU_MAX_EVIDENCE_ENTRIES", "32")
+    app = new_app()
+    load_configuration(app)
+    assert app.config["TAS_NVIDIA_GPU_VERIFICATION_MODE"] == "local"
+    assert app.config["TAS_GPU_MAX_EVIDENCE_ENTRIES"] == 32
+
+
+def test_gpu_settings_file_overrides(tmp_path, monkeypatch):
+    _set_required_keys(monkeypatch)
+    cfg = tmp_path / "tas.yaml"
+    cfg.write_text(
+        textwrap.dedent(
+            """
+            TAS_NVIDIA_GPU_VERIFICATION_MODE: "local"
+            TAS_GPU_MAX_EVIDENCE_ENTRIES: 8
+            """
+        )
+    )
+    monkeypatch.setenv("TAS_CONFIG_FILE", str(cfg))
+    app = new_app()
+    load_configuration(app)
+    assert app.config["TAS_NVIDIA_GPU_VERIFICATION_MODE"] == "local"
+    assert app.config["TAS_GPU_MAX_EVIDENCE_ENTRIES"] == 8
+
+
+@pytest.mark.parametrize("bad_mode", ["nras", "Remote", "LOCAL", "", "offline"])
+def test_invalid_gpu_verification_mode_rejected(monkeypatch, bad_mode):
+    _set_required_keys(monkeypatch)
+    monkeypatch.setenv("TAS_NVIDIA_GPU_VERIFICATION_MODE", bad_mode)
+    app = new_app()
+    with pytest.raises(
+        RuntimeError,
+        match="TAS_NVIDIA_GPU_VERIFICATION_MODE must be 'remote' or 'local'",
+    ):
+        load_configuration(app)
+
+
+@pytest.mark.parametrize("bad_max", ["0", "-1", "sixteen", "1.5", "true", "[16]"])
+def test_invalid_gpu_max_evidence_entries_rejected(monkeypatch, bad_max):
+    _set_required_keys(monkeypatch)
+    monkeypatch.setenv("TAS_GPU_MAX_EVIDENCE_ENTRIES", bad_max)
+    app = new_app()
+    with pytest.raises(
+        RuntimeError, match="TAS_GPU_MAX_EVIDENCE_ENTRIES must be a positive integer"
+    ):
+        load_configuration(app)

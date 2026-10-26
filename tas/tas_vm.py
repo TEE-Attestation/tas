@@ -89,6 +89,10 @@ SUPPORTED_TEE_TYPES = frozenset(POLICY_TYPE_BY_TEE)
 # verifier regardless and then fall outside every policy rule.
 SUPPORTED_GPU_TYPES = frozenset({"gpu-nvidia"})
 
+# Default upper bound on per-request GPU evidence entries; overridable via the
+# TAS_GPU_MAX_EVIDENCE_ENTRIES config key (see _resolve_gpu_max_evidence_entries).
+DEFAULT_MAX_GPU_EVIDENCE_ENTRIES = 16
+
 
 def sev_fetch_certs_from_redis(redis_client: redis.StrictRedis, report):
     """
@@ -949,6 +953,104 @@ def _resolve_gpu_verification_mode():
         return "remote"
 
 
+def _resolve_gpu_max_evidence_entries():
+    """
+    Return the maximum number of GPU evidence entries accepted per request.
+
+    Read from the TAS_GPU_MAX_EVIDENCE_ENTRIES config key (validated at
+    startup by the config loader). Falls back to
+    DEFAULT_MAX_GPU_EVIDENCE_ENTRIES when there is no active application
+    context.
+    """
+    try:
+        return current_app.config.get(
+            "TAS_GPU_MAX_EVIDENCE_ENTRIES", DEFAULT_MAX_GPU_EVIDENCE_ENTRIES
+        )
+    except RuntimeError:
+        return DEFAULT_MAX_GPU_EVIDENCE_ENTRIES
+
+
+def _validate_gpu_list(gpu_list, max_entries=None):
+    """
+    Validate the shape of a client-supplied GPU evidence list.
+
+    Everything in ``gpu_list`` comes straight from the request body, so each
+    field is checked here before any other code indexes into it. Checks:
+
+    - ``gpu_list`` is a list of at most ``max_entries`` objects (defaults to
+      the configured TAS_GPU_MAX_EVIDENCE_ENTRIES).
+    - Every entry has a ``device-index`` that is a non-negative integer (bools
+      are rejected even though they subclass int), no two entries share one,
+      and together they form the contiguous range ``0..N-1`` (in any order).
+    - Every entry has a ``type`` in SUPPORTED_GPU_TYPES.
+    - Every entry has a non-empty string ``evidence``.
+
+    Returns:
+        str or None: An error message suitable for returning to the client, or
+        None when the list is well-formed. An empty list is well-formed.
+    """
+    if max_entries is None:
+        max_entries = _resolve_gpu_max_evidence_entries()
+
+    if not isinstance(gpu_list, list):
+        logger.error(f"GPU evidence is not a list: {type(gpu_list).__name__}")
+        return "GPU evidence must be a list"
+
+    if len(gpu_list) > max_entries:
+        logger.error(f"Too many GPU evidence entries: {len(gpu_list)}")
+        return f"Too many GPU evidence entries (max {max_entries})"
+
+    seen_indices = set()
+    for position, gpu_entry in enumerate(gpu_list):
+        if not isinstance(gpu_entry, dict):
+            logger.error(
+                f"GPU evidence entry {position} is not an object: "
+                f"{type(gpu_entry).__name__}"
+            )
+            return f"GPU evidence entry {position} must be an object"
+
+        device_index = gpu_entry.get("device-index")
+        if (
+            isinstance(device_index, bool)
+            or not isinstance(device_index, int)
+            or device_index < 0
+        ):
+            logger.error(
+                f"GPU evidence entry {position}: invalid device-index {device_index!r}"
+            )
+            return f"GPU evidence entry {position}: missing or invalid device-index"
+        if device_index in seen_indices:
+            logger.error(f"GPU evidence entry {position}: duplicate device-index")
+            return f"GPU evidence entry {position}: duplicate device-index"
+        seen_indices.add(device_index)
+
+        # The device type selects which policy rules apply, so it must be one
+        # TAS actually verifies (see SUPPORTED_GPU_TYPES).
+        gpu_type = gpu_entry.get("type")
+        if gpu_type not in SUPPORTED_GPU_TYPES:
+            logger.error(
+                f"GPU {device_index}: unsupported GPU device type {gpu_type!r}"
+            )
+            return f"GPU {device_index}: unsupported GPU device type"
+
+        gpu_evidence = gpu_entry.get("evidence")
+        if not isinstance(gpu_evidence, str) or not gpu_evidence:
+            logger.error(f"GPU {device_index}: missing or invalid evidence")
+            return f"GPU {device_index}: missing or invalid evidence"
+
+    # Indices are unique and non-negative, so they are contiguous from 0
+    # exactly when they cover 0..N-1. An agent enumerates every GPU it
+    # attests, so a gap means an entry was dropped or an index fabricated.
+    if seen_indices != set(range(len(gpu_list))):
+        logger.error(
+            f"GPU evidence device-index values are not contiguous from 0: "
+            f"{sorted(seen_indices)}"
+        )
+        return "GPU evidence device-index values must be contiguous from 0"
+
+    return None
+
+
 def _verify_gpu_evidence_list(redis_client, gpu_list, nonce):
     """
     Verify every GPU's attestation evidence once, independent of any policy.
@@ -965,35 +1067,21 @@ def _verify_gpu_evidence_list(redis_client, gpu_list, nonce):
         and ``evidence_hash`` (SHA-512 of the inner raw evidence). On failure
         ``ok`` is False, ``error`` is set and ``results`` is None.
     """
-    if len(gpu_list) > 16:
-        logger.error(f"Too many GPU evidence entries: {len(gpu_list)}")
-        return False, "Too many GPU evidence entries (max 16)", None
+    # Callers validate up front, but this is the function that indexes into
+    # the entries, so it never trusts its input either.
+    validation_error = _validate_gpu_list(gpu_list)
+    if validation_error:
+        return False, validation_error, None
 
     gpu_mode = _resolve_gpu_verification_mode()
     gpu_list_sorted = sorted(gpu_list, key=lambda e: e["device-index"])
-
-    # Reject unknown device types before doing any verification work. The
-    # device type selects which policy rules apply, so it must be one TAS
-    # actually verifies (see SUPPORTED_GPU_TYPES).
-    for gpu_entry in gpu_list_sorted:
-        gpu_type = gpu_entry.get("type")
-        if gpu_type not in SUPPORTED_GPU_TYPES:
-            gpu_device_index = gpu_entry.get("device-index", -1)
-            logger.error(
-                f"GPU {gpu_device_index}: unsupported GPU device type {gpu_type!r}"
-            )
-            return (
-                False,
-                f"GPU {gpu_device_index}: unsupported GPU device type",
-                None,
-            )
 
     results = []
     for gpu_entry in gpu_list_sorted:
         # GPU policy is keyed by device type (e.g. "gpu-nvidia")
         gpu_type = gpu_entry["type"]
-        gpu_evidence = gpu_entry.get("evidence", "")
-        gpu_device_index = gpu_entry.get("device-index", -1)
+        gpu_evidence = gpu_entry["evidence"]
+        gpu_device_index = gpu_entry["device-index"]
 
         # In local mode, pre-fetch cached RIM collateral from Redis so the
         # verifier only downloads from NVIDIA what is missing. The report is
@@ -1134,7 +1222,10 @@ def verify(
                   SUPPORTED_GPU_TYPES (e.g., "gpu-nvidia"); it selects the
                   ``components.gpu`` policy rules applied to that device.
                 - "evidence"  (str): Base64-encoded GPU attestation evidence.
-                - "device-index"  (int): GPU device index (used for ordering).
+                - "device-index"  (int): Non-negative GPU device index. Across
+                  the list the indices must be unique and contiguous from 0
+                  (used for ordering).
+            The list is validated by :func:`_validate_gpu_list` before use.
             Each GPU is verified when required by the policy or when binding
             is enabled with a wrapping key. Evidence hashes are appended to the
             report_data computation only when binding is enabled.
@@ -1154,6 +1245,13 @@ def verify(
     )
     if input_error:
         return False, input_error
+
+    # Reject malformed GPU evidence up front, regardless of whether this
+    # policy or binding mode would go on to use it.
+    if gpu_list is not None:
+        gpu_input_error = _validate_gpu_list(gpu_list)
+        if gpu_input_error:
+            return False, gpu_input_error
 
     # Extract GPU component policy (if present)
     gpu_component_policy = None
@@ -1276,6 +1374,12 @@ def domain_verify(
         verify_error (str or None): An error message if verification fails, None otherwise.
     """
     log_function_entry("domain_verify", nonce="***", tee_type=tee_type)
+
+    # Reject malformed GPU evidence before any policy lookups or verification.
+    if gpu_list is not None:
+        gpu_input_error = _validate_gpu_list(gpu_list)
+        if gpu_input_error:
+            return False, None, gpu_input_error
 
     try:
         domain_policy = get_domain_policy_from_redis(redis_client, domain_policy_id)

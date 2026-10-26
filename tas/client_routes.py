@@ -134,6 +134,9 @@ def get_secret():
 
     # Optional component evidence
     component_evidence = data.get("component-evidence", None)
+    if component_evidence is not None and not isinstance(component_evidence, dict):
+        logger.error("Secret request component-evidence is not an object")
+        return jsonify({"error": "component-evidence must be an object"}), 400
     gpu_list = component_evidence.get("gpu", None) if component_evidence else None
 
     # Get client's wrapping key (RSA public key) from the request

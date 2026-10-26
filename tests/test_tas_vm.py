@@ -591,6 +591,316 @@ class TestVmVerifyGpuEvidence:
         assert "GPU 1" in err
 
 
+# ── GPU evidence list shape validation tests ────────────────────────
+
+
+class _Absent:
+    """Sentinel: remove this key from a test entry."""
+
+    def __repr__(self):
+        return "<absent>"
+
+
+_ABSENT = _Absent()
+
+
+class TestGpuEvidenceListValidation:
+    """Tests for _validate_gpu_list and its wiring into the verification paths.
+
+    Regression tests: the GPU evidence list was previously indexed into
+    (``len``, ``sorted(key=lambda e: e["device-index"])``) straight from the
+    request body, so a non-list or a malformed entry raised an unhandled
+    ``TypeError``/``KeyError`` (an HTTP 500), while out-of-range, boolean,
+    float or duplicate ``device-index`` values were silently accepted.
+    """
+
+    NONCE = "gpu-shape-nonce"
+    TEE_EVIDENCE_B64 = base64.b64encode(b"\xca\xfe").decode()
+    WRAPPING_KEY = b"\x33" * 16
+    KEY_ID = "gpu-shape-key"
+
+    @staticmethod
+    def _make_envelope(raw_bytes):
+        inner_b64 = base64.b64encode(raw_bytes).decode()
+        envelope = json.dumps({"evidence": inner_b64})
+        return base64.b64encode(envelope.encode()).decode()
+
+    def _entry(self, **overrides):
+        entry = {
+            "type": "gpu-nvidia",
+            "evidence": self._make_envelope(b"\x01"),
+            "device-index": 0,
+        }
+        entry.update(overrides)
+        for key, value in overrides.items():
+            if value is _ABSENT:
+                del entry[key]
+        return entry
+
+    # -- _validate_gpu_list directly --------------------------------------
+
+    def test_well_formed_list_passes(self):
+        from tas.tas_vm import _validate_gpu_list
+
+        gpu_list = [self._entry(**{"device-index": i}) for i in range(3)]
+        assert _validate_gpu_list(gpu_list) is None
+
+    def test_empty_list_passes(self):
+        from tas.tas_vm import _validate_gpu_list
+
+        assert _validate_gpu_list([]) is None
+
+    def test_non_list_rejected(self):
+        from tas.tas_vm import _validate_gpu_list
+
+        for bad in [1, True, "x", {"0": {}}, {"device-index": 0}, 1.5, b"x"]:
+            err = _validate_gpu_list(bad)
+            assert err == "GPU evidence must be a list", f"{bad!r} not rejected"
+
+    def test_too_many_entries_rejected(self):
+        """Without an app context the default cap applies."""
+        from tas.tas_vm import DEFAULT_MAX_GPU_EVIDENCE_ENTRIES, _validate_gpu_list
+
+        gpu_list = [
+            self._entry(**{"device-index": i})
+            for i in range(DEFAULT_MAX_GPU_EVIDENCE_ENTRIES + 1)
+        ]
+        err = _validate_gpu_list(gpu_list)
+        assert err == (
+            f"Too many GPU evidence entries (max {DEFAULT_MAX_GPU_EVIDENCE_ENTRIES})"
+        )
+
+    def test_max_entries_parameter_overrides_default(self):
+        from tas.tas_vm import _validate_gpu_list
+
+        gpu_list = [self._entry(**{"device-index": i}) for i in range(3)]
+        assert _validate_gpu_list(gpu_list, max_entries=3) is None
+        assert _validate_gpu_list(gpu_list, max_entries=2) == (
+            "Too many GPU evidence entries (max 2)"
+        )
+
+    def test_max_entries_read_from_app_config(self):
+        """TAS_GPU_MAX_EVIDENCE_ENTRIES raises or lowers the cap at runtime."""
+        from flask import Flask
+
+        from tas.tas_vm import _validate_gpu_list
+
+        gpu_list = [self._entry(**{"device-index": i}) for i in range(20)]
+
+        app = Flask(__name__)
+        app.config["TAS_GPU_MAX_EVIDENCE_ENTRIES"] = 32
+        with app.app_context():
+            assert _validate_gpu_list(gpu_list) is None
+
+        app.config["TAS_GPU_MAX_EVIDENCE_ENTRIES"] = 8
+        with app.app_context():
+            assert _validate_gpu_list(gpu_list) == (
+                "Too many GPU evidence entries (max 8)"
+            )
+
+    def test_max_entries_defaults_when_not_configured_in_app(self):
+        from flask import Flask
+
+        from tas.tas_vm import DEFAULT_MAX_GPU_EVIDENCE_ENTRIES, _validate_gpu_list
+
+        gpu_list = [
+            self._entry(**{"device-index": i})
+            for i in range(DEFAULT_MAX_GPU_EVIDENCE_ENTRIES + 1)
+        ]
+        with Flask(__name__).app_context():
+            assert _validate_gpu_list(gpu_list) == (
+                f"Too many GPU evidence entries (max {DEFAULT_MAX_GPU_EVIDENCE_ENTRIES})"
+            )
+
+    def test_non_object_entries_rejected(self):
+        from tas.tas_vm import _validate_gpu_list
+
+        for bad in [None, "not-a-dict", 1, True, [], ["device-index"]]:
+            err = _validate_gpu_list([self._entry(), bad])
+            assert err == "GPU evidence entry 1 must be an object", f"{bad!r}"
+
+    def test_missing_device_index_rejected(self):
+        from tas.tas_vm import _validate_gpu_list
+
+        err = _validate_gpu_list([self._entry(**{"device-index": _ABSENT})])
+        assert err == "GPU evidence entry 0: missing or invalid device-index"
+
+    def test_invalid_device_index_values_rejected(self):
+        from tas.tas_vm import _validate_gpu_list
+
+        for bad in [-1, True, False, 1.5, "0", None, [0], {}]:
+            err = _validate_gpu_list([self._entry(**{"device-index": bad})])
+            assert (
+                err == "GPU evidence entry 0: missing or invalid device-index"
+            ), f"device-index {bad!r} not rejected"
+
+    def test_duplicate_device_index_rejected(self):
+        from tas.tas_vm import _validate_gpu_list
+
+        gpu_list = [
+            self._entry(**{"device-index": 0}),
+            self._entry(**{"device-index": 1}),
+            self._entry(**{"device-index": 0}),
+        ]
+        err = _validate_gpu_list(gpu_list)
+        assert err == "GPU evidence entry 2: duplicate device-index"
+
+    def test_contiguous_indices_in_any_order_allowed(self):
+        """Indices must cover 0..N-1 but may appear in any order."""
+        from tas.tas_vm import _validate_gpu_list
+
+        gpu_list = [self._entry(**{"device-index": i}) for i in (2, 0, 1)]
+        assert _validate_gpu_list(gpu_list) is None
+
+    def test_non_contiguous_indices_rejected(self):
+        """Gaps or an offset start are rejected even when indices are unique."""
+        from tas.tas_vm import _validate_gpu_list
+
+        for indices in [(1,), (0, 2), (3, 0, 7), (1, 2, 3), (0, 1, 3)]:
+            gpu_list = [self._entry(**{"device-index": i}) for i in indices]
+            err = _validate_gpu_list(gpu_list)
+            assert (
+                err == "GPU evidence device-index values must be contiguous from 0"
+            ), f"indices {indices} not rejected"
+
+    def test_duplicate_reported_before_contiguity(self):
+        """A duplicate gets its specific message, not the generic contiguity one."""
+        from tas.tas_vm import _validate_gpu_list
+
+        gpu_list = [self._entry(**{"device-index": i}) for i in (0, 0)]
+        assert _validate_gpu_list(gpu_list) == (
+            "GPU evidence entry 1: duplicate device-index"
+        )
+
+    def test_unsupported_type_rejected(self):
+        from tas.tas_vm import _validate_gpu_list
+
+        for bad in ["GPU-NVIDIA", "nvidia", "", None, 1, _ABSENT]:
+            err = _validate_gpu_list([self._entry(type=bad)])
+            assert err == "GPU 0: unsupported GPU device type", f"type {bad!r}"
+
+    def test_missing_or_invalid_evidence_rejected(self):
+        from tas.tas_vm import _validate_gpu_list
+
+        for bad in ["", None, 1, True, [], {}, b"abc", _ABSENT]:
+            err = _validate_gpu_list([self._entry(evidence=bad)])
+            assert err == "GPU 0: missing or invalid evidence", f"evidence {bad!r}"
+
+    def test_error_messages_do_not_echo_client_values(self):
+        """Client-facing errors must not reflect attacker-controlled strings."""
+        from tas.tas_vm import _validate_gpu_list
+
+        marker = "<script>injected</script>"
+        for gpu_list in [
+            marker,
+            [marker],
+            [self._entry(type=marker)],
+            [self._entry(evidence=marker, type=marker)],
+            [self._entry(**{"device-index": marker})],
+        ]:
+            err = _validate_gpu_list(gpu_list)
+            assert err is not None
+            assert marker not in err
+
+    # -- _verify_gpu_evidence_list no longer raises ------------------------
+
+    @patch("tas.tas_vm.gpu_vm_verify")
+    def test_verify_gpu_evidence_list_rejects_without_raising(self, mock_gpu):
+        from tas.tas_vm import _verify_gpu_evidence_list
+
+        cases = [
+            1,
+            True,
+            "x",
+            {"0": {}},
+            [None],
+            ["not-a-dict"],
+            [self._entry(**{"device-index": _ABSENT})],
+            [self._entry(**{"device-index": "0"}), self._entry(**{"device-index": 1})],
+            [self._entry(**{"device-index": 0}), self._entry(**{"device-index": 0})],
+        ]
+        for gpu_list in cases:
+            ok, err, results = _verify_gpu_evidence_list(MagicMock(), gpu_list, "n")
+            assert ok is False, f"{gpu_list!r} accepted"
+            assert isinstance(err, str) and err
+            assert results is None
+        mock_gpu.assert_not_called()
+
+    # -- wiring into verify() / vm_verify() --------------------------------
+
+    @patch("tas.tas_vm.get_policy_from_redis", return_value=(_MOCK_POLICY, "k"))
+    @patch("tas.tas_vm.gpu_vm_verify")
+    @patch("tas.tas_vm.sev_vm_verify")
+    def test_vm_verify_rejects_malformed_gpu_list(
+        self, mock_sev, mock_gpu, _mock_policy
+    ):
+        """Malformed GPU input fails verification cleanly before any TEE work."""
+        for gpu_list in [
+            1,
+            "x",
+            {"0": {}},
+            [None],
+            [self._entry(**{"device-index": -1})],
+        ]:
+            ok, key_id, err = vm_verify(
+                MagicMock(),
+                self.NONCE,
+                "amd-sev-snp",
+                self.TEE_EVIDENCE_B64,
+                self.KEY_ID,
+                wrapping_key=self.WRAPPING_KEY,
+                report_data_binding=True,
+                gpu_list=gpu_list,
+            )
+            assert ok is False, f"{gpu_list!r} accepted"
+            assert key_id is None
+            assert err
+        mock_gpu.assert_not_called()
+        mock_sev.assert_not_called()
+
+    @patch("tas.tas_vm.get_policy_from_redis", return_value=(_MOCK_POLICY, "k"))
+    @patch("tas.tas_vm.gpu_vm_verify")
+    @patch("tas.tas_vm.sev_vm_verify")
+    def test_vm_verify_rejects_malformed_gpu_list_even_without_binding(
+        self, mock_sev, mock_gpu, _mock_policy
+    ):
+        """Shape validation applies regardless of report_data_binding."""
+        ok, _, err = vm_verify(
+            MagicMock(),
+            self.NONCE,
+            "amd-sev-snp",
+            self.TEE_EVIDENCE_B64,
+            self.KEY_ID,
+            wrapping_key=self.WRAPPING_KEY,
+            report_data_binding=False,
+            gpu_list={"0": {}},
+        )
+        assert ok is False
+        assert err == "GPU evidence must be a list"
+        mock_sev.assert_not_called()
+
+    @patch("tas.tas_vm.get_policy_from_redis", return_value=(_MOCK_POLICY, "k"))
+    @patch("tas.tas_vm.gpu_vm_verify")
+    @patch("tas.tas_vm.sev_vm_verify")
+    def test_vm_verify_gpu_list_none_still_means_no_gpus(
+        self, mock_sev, mock_gpu, _mock_policy
+    ):
+        mock_sev.return_value = (True, None)
+        ok, _, err = vm_verify(
+            MagicMock(),
+            self.NONCE,
+            "amd-sev-snp",
+            self.TEE_EVIDENCE_B64,
+            self.KEY_ID,
+            wrapping_key=self.WRAPPING_KEY,
+            report_data_binding=True,
+            gpu_list=None,
+        )
+        assert ok is True
+        assert err is None
+        mock_gpu.assert_not_called()
+
+
 # ── vm_verify GPU policy tests ──────────────────────────────────────
 
 # Example NVIDIA GPU policy (as stored in components.gpu.nvidia)
@@ -1013,7 +1323,7 @@ def test_preverified_gpu_results_still_apply_policy(binding, policy_passes):
             _POLICY_WITH_GPU,
             wrapping_key=b"key",
             report_data_binding=binding,
-            gpu_list=[{"type": "gpu-nvidia", "device-index": 0}],
+            gpu_list=[{"type": "gpu-nvidia", "device-index": 0, "evidence": "x"}],
             gpu_results=results,
         )
     gpu_verify.assert_not_called()

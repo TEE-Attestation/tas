@@ -45,6 +45,11 @@ TAS_ENFORCE_SIGNED_POLICIES: true
 #   "local"  - verify locally with nvidia_pytools (RIMs cached in Redis)
 #TAS_NVIDIA_GPU_VERIFICATION_MODE: "remote"
 
+# Maximum number of GPU evidence entries accepted per attestation request.
+# Raise MAX_CONTENT_LENGTH (and, for the certify flow,
+# TAS_CERT_EVIDENCE_DIGEST_MAX_ENTRIES) alongside this for large multi-GPU hosts.
+#TAS_GPU_MAX_EVIDENCE_ENTRIES: 16
+
 # Optional nested settings (available under app.config['TAS'])
 TAS:
   limits:
