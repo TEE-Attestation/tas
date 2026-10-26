@@ -348,7 +348,7 @@ class TestVmVerifyGpuEvidence:
         """More than 16 GPU entries should be rejected."""
         gpu_evidence = [
             {
-                "type": "nvidia-hopper",
+                "type": "gpu-nvidia",
                 "evidence": self.GPU_EVIDENCE_B64,
                 "device-index": i,
             }
@@ -371,7 +371,7 @@ class TestVmVerifyGpuEvidence:
         """Exactly 16 GPU entries should not be rejected by the cap."""
         gpu_evidence = [
             {
-                "type": "nvidia-hopper",
+                "type": "gpu-nvidia",
                 "evidence": self.GPU_EVIDENCE_B64,
                 "device-index": i,
             }
@@ -395,7 +395,7 @@ class TestVmVerifyGpuEvidence:
         """If a GPU fails verification, vm_verify should return its error."""
         gpu_evidence = [
             {
-                "type": "nvidia-hopper",
+                "type": "gpu-nvidia",
                 "evidence": self.GPU_EVIDENCE_B64,
                 "device-index": 0,
             },
@@ -423,12 +423,12 @@ class TestVmVerifyGpuEvidence:
         gpu1_raw = b"\xcc\xdd"
         gpu_evidence = [
             {
-                "type": "nvidia-hopper",
+                "type": "gpu-nvidia",
                 "evidence": self._make_envelope(gpu1_raw),
                 "device-index": 1,
             },
             {
-                "type": "nvidia-hopper",
+                "type": "gpu-nvidia",
                 "evidence": self._make_envelope(gpu0_raw),
                 "device-index": 0,
             },
@@ -464,17 +464,17 @@ class TestVmVerifyGpuEvidence:
 
         gpu_entries = [
             {
-                "type": "t",
+                "type": "gpu-nvidia",
                 "evidence": self._make_envelope(b"gpu2"),
                 "device-index": 2,
             },
             {
-                "type": "t",
+                "type": "gpu-nvidia",
                 "evidence": self._make_envelope(b"gpu0"),
                 "device-index": 0,
             },
             {
-                "type": "t",
+                "type": "gpu-nvidia",
                 "evidence": self._make_envelope(b"gpu1"),
                 "device-index": 1,
             },
@@ -500,7 +500,7 @@ class TestVmVerifyGpuEvidence:
         """GPU evidence without report_data_binding should not trigger GPU verify."""
         gpu_evidence = [
             {
-                "type": "nvidia-hopper",
+                "type": "gpu-nvidia",
                 "evidence": self.GPU_EVIDENCE_B64,
                 "device-index": 0,
             },
@@ -565,12 +565,12 @@ class TestVmVerifyGpuEvidence:
 
         gpu_evidence = [
             {
-                "type": "t",
+                "type": "gpu-nvidia",
                 "evidence": self._make_envelope(b"g0"),
                 "device-index": 0,
             },
             {
-                "type": "t",
+                "type": "gpu-nvidia",
                 "evidence": self._make_envelope(b"g1"),
                 "device-index": 1,
             },
@@ -669,7 +669,7 @@ class TestVmVerifyGpuPolicy:
         mock_sev.return_value = (True, None)
         gpu_evidence = [
             {
-                "type": "nvidia-hopper",
+                "type": "gpu-nvidia",
                 "evidence": self._make_envelope(b"\xaa"),
                 "device-index": 0,
             },
@@ -734,21 +734,63 @@ class TestVmVerifyGpuPolicy:
     @patch("tas.tas_vm.gpu_validate_claims", return_value=(True, None))
     @patch("tas.tas_vm.gpu_vm_verify", return_value=(True, MagicMock(), None))
     @patch("tas.tas_vm.sev_vm_verify")
-    def test_non_matching_device_type_skips_claims_policy(
+    def test_unsupported_device_type_rejected_before_verification(
         self, mock_sev, mock_gpu, mock_validate, _mock_policy
     ):
-        """GPUs whose device type has no matching policy key skip claims validation."""
+        """An unknown GPU device type is rejected without verifying or applying policy.
+
+        Regression test: a client could previously present any ``type`` string
+        (e.g. a case variant of ``gpu-nvidia``); the evidence was still verified
+        by the NVIDIA verifier, but the unmatched type fell outside every
+        ``components.gpu`` rule and the policy claims check was skipped.
+        """
+        mock_sev.return_value = (True, None)
+
+        for bad_type in ["GPU-NVIDIA", "nvidia", "amd-gpu", "spoofed", "", None]:
+            gpu_evidence = [
+                {
+                    "type": bad_type,
+                    "evidence": self._make_envelope(b"\xcc"),
+                    "device-index": 0,
+                },
+            ]
+
+            ok, key_id, err = vm_verify(
+                MagicMock(),
+                self.NONCE,
+                "amd-sev-snp",
+                self.TEE_EVIDENCE_B64,
+                self.KEY_ID,
+                wrapping_key=self.WRAPPING_KEY,
+                report_data_binding=True,
+                gpu_list=gpu_evidence,
+            )
+
+            assert ok is False, f"type {bad_type!r} was accepted"
+            assert key_id is None
+            assert err == "GPU 0: unsupported GPU device type"
+            mock_gpu.assert_not_called()
+            mock_validate.assert_not_called()
+            mock_sev.assert_not_called()
+
+    @patch(
+        "tas.tas_vm.get_policy_from_redis",
+        return_value=(_POLICY_WITH_GPU, "gpu-test-key"),
+    )
+    @patch("tas.tas_vm.gpu_validate_claims", return_value=(True, None))
+    @patch("tas.tas_vm.gpu_vm_verify", return_value=(True, MagicMock(), None))
+    @patch("tas.tas_vm.sev_vm_verify")
+    def test_missing_device_type_rejected(
+        self, mock_sev, mock_gpu, mock_validate, _mock_policy
+    ):
+        """``type`` is required; an entry without it must not default to a known type."""
         mock_sev.return_value = (True, None)
 
         gpu_evidence = [
-            {
-                "type": "amd-gpu",
-                "evidence": self._make_envelope(b"\xcc"),
-                "device-index": 0,
-            },
+            {"evidence": self._make_envelope(b"\xcc"), "device-index": 0},
         ]
 
-        vm_verify(
+        ok, _, err = vm_verify(
             MagicMock(),
             self.NONCE,
             "amd-sev-snp",
@@ -759,6 +801,93 @@ class TestVmVerifyGpuPolicy:
             gpu_list=gpu_evidence,
         )
 
+        assert ok is False
+        assert err == "GPU 0: unsupported GPU device type"
+        mock_gpu.assert_not_called()
+        mock_validate.assert_not_called()
+
+    @patch(
+        "tas.tas_vm.get_policy_from_redis",
+        return_value=(_POLICY_WITH_GPU, "gpu-test-key"),
+    )
+    @patch("tas.tas_vm.gpu_validate_claims", return_value=(True, None))
+    @patch("tas.tas_vm.gpu_vm_verify", return_value=(True, MagicMock(), None))
+    @patch("tas.tas_vm.sev_vm_verify")
+    def test_unsupported_type_in_multi_gpu_list_rejects_whole_request(
+        self, mock_sev, mock_gpu, mock_validate, _mock_policy
+    ):
+        """One bad entry fails the request before any GPU is verified."""
+        mock_sev.return_value = (True, None)
+
+        gpu_evidence = [
+            {
+                "type": "gpu-nvidia",
+                "evidence": self._make_envelope(b"\x00"),
+                "device-index": 0,
+            },
+            {
+                "type": "GPU-NVIDIA",
+                "evidence": self._make_envelope(b"\x01"),
+                "device-index": 1,
+            },
+        ]
+
+        ok, _, err = vm_verify(
+            MagicMock(),
+            self.NONCE,
+            "amd-sev-snp",
+            self.TEE_EVIDENCE_B64,
+            self.KEY_ID,
+            wrapping_key=self.WRAPPING_KEY,
+            report_data_binding=True,
+            gpu_list=gpu_evidence,
+        )
+
+        assert ok is False
+        assert err == "GPU 1: unsupported GPU device type"
+        mock_gpu.assert_not_called()
+
+    @patch("tas.tas_vm.gpu_validate_claims", return_value=(True, None))
+    def test_policy_without_rule_for_verified_device_type_fails(self, mock_validate):
+        """A components.gpu section must cover every verified device type."""
+        from tas.tas_vm import _apply_gpu_claims_policy
+
+        gpu_results = [
+            {
+                "device_index": 0,
+                "type": "gpu-nvidia",
+                "claims": MagicMock(),
+                "evidence_hash": b"\x00" * 64,
+            }
+        ]
+        policy_for_other_type = {"gpu-other": _NVIDIA_GPU_POLICY}
+
+        ok, err = _apply_gpu_claims_policy(policy_for_other_type, gpu_results)
+
+        assert ok is False
+        assert err == "GPU 0: policy has no rules for device type 'gpu-nvidia'"
+        mock_validate.assert_not_called()
+
+    @patch("tas.tas_vm.gpu_validate_claims", return_value=(True, None))
+    def test_policy_rule_lookup_is_case_sensitive(self, mock_validate):
+        """Policy keys are matched exactly; a case variant is not a match."""
+        from tas.tas_vm import _apply_gpu_claims_policy
+
+        gpu_results = [
+            {
+                "device_index": 0,
+                "type": "gpu-nvidia",
+                "claims": MagicMock(),
+                "evidence_hash": b"\x00" * 64,
+            }
+        ]
+
+        ok, err = _apply_gpu_claims_policy(
+            {"GPU-NVIDIA": _NVIDIA_GPU_POLICY}, gpu_results
+        )
+
+        assert ok is False
+        assert "no rules for device type" in err
         mock_validate.assert_not_called()
 
 

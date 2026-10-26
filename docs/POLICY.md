@@ -152,6 +152,13 @@ the **device type** reported by the agent. NVIDIA GPUs report `gpu-nvidia`:
 }
 ```
 
+The device type is matched exactly (case-sensitive) against the `type` each GPU
+evidence entry carries. The agent may only present supported device types
+(currently `gpu-nvidia`); any other value is rejected before verification. When
+a policy carries a `components.gpu` section, **every** GPU presented must be
+covered by a rule for its device type — a verified GPU whose type has no entry
+under `components.gpu` fails the policy rather than being skipped.
+
 The object under `gpu-nvidia` is an **NVIDIA attestation policy** consumed by
 [`nvidia_pytools`](https://github.com/TEE-Attestation/nvidia_pytools). It
 validates the claims returned by the NVIDIA Remote Attestation Service (NRAS)

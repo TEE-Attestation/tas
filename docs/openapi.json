@@ -126,7 +126,10 @@
         "properties": {
           "type": {
             "type": "string",
-            "description": "GPU device type",
+            "description": "GPU device type. Must be a supported value; it selects which `components.gpu` policy rules are applied to this device. Entries with any other value are rejected.",
+            "enum": [
+              "gpu-nvidia"
+            ],
             "example": "gpu-nvidia"
           },
           "evidence": {

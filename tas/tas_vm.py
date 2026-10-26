@@ -83,6 +83,12 @@ logger = get_logger(__name__)
 POLICY_TYPE_BY_TEE = {"amd-sev-snp": "SEV", "intel-tdx": "TDX"}
 SUPPORTED_TEE_TYPES = frozenset(POLICY_TYPE_BY_TEE)
 
+# GPU device types TAS knows how to verify. A policy's ``components.gpu`` is
+# keyed by these same values, so the client-supplied ``type`` must be one of
+# them: an unrecognised type would otherwise be verified by the NVIDIA
+# verifier regardless and then fall outside every policy rule.
+SUPPORTED_GPU_TYPES = frozenset({"gpu-nvidia"})
+
 
 def sev_fetch_certs_from_redis(redis_client: redis.StrictRedis, report):
     """
@@ -966,10 +972,26 @@ def _verify_gpu_evidence_list(redis_client, gpu_list, nonce):
     gpu_mode = _resolve_gpu_verification_mode()
     gpu_list_sorted = sorted(gpu_list, key=lambda e: e["device-index"])
 
+    # Reject unknown device types before doing any verification work. The
+    # device type selects which policy rules apply, so it must be one TAS
+    # actually verifies (see SUPPORTED_GPU_TYPES).
+    for gpu_entry in gpu_list_sorted:
+        gpu_type = gpu_entry.get("type")
+        if gpu_type not in SUPPORTED_GPU_TYPES:
+            gpu_device_index = gpu_entry.get("device-index", -1)
+            logger.error(
+                f"GPU {gpu_device_index}: unsupported GPU device type {gpu_type!r}"
+            )
+            return (
+                False,
+                f"GPU {gpu_device_index}: unsupported GPU device type",
+                None,
+            )
+
     results = []
     for gpu_entry in gpu_list_sorted:
         # GPU policy is keyed by device type (e.g. "gpu-nvidia")
-        gpu_type = gpu_entry.get("type", "gpu-nvidia")
+        gpu_type = gpu_entry["type"]
         gpu_evidence = gpu_entry.get("evidence", "")
         gpu_device_index = gpu_entry.get("device-index", -1)
 
@@ -1047,16 +1069,29 @@ def _apply_gpu_claims_policy(gpu_component_policy, gpu_results):
     candidate certify-policy without repeating evidence verification.
 
     Returns:
-        (ok, error): ``ok`` True when every GPU satisfies the policy (or the
-        policy has no rule for that device type), else False with an error.
+        (ok, error): ``ok`` True when every GPU satisfies the policy, else
+        False with an error. When the policy carries a ``components.gpu``
+        section, every verified GPU must be covered by a rule for its device
+        type; a GPU with no matching rule fails rather than being skipped, so
+        the policy cannot be sidestepped by presenting a device type it does
+        not mention.
     """
     if not isinstance(gpu_component_policy, dict):
         return True, None
 
     for result in gpu_results:
-        gpu_policy_for_device = gpu_component_policy.get(result["type"])
+        gpu_type = result["type"]
+        gpu_policy_for_device = gpu_component_policy.get(gpu_type)
         if not gpu_policy_for_device:
-            continue
+            logger.error(
+                f"GPU {result['device_index']}: policy has no rules for device "
+                f"type '{gpu_type}'"
+            )
+            return (
+                False,
+                f"GPU {result['device_index']}: policy has no rules for device "
+                f"type '{gpu_type}'",
+            )
         ok, error = gpu_validate_claims(
             gpu_policy_for_device, result["claims"], result["device_index"]
         )
@@ -1095,7 +1130,9 @@ def verify(
             are enforced independently of this binding mode.
         gpu_list (list, optional): List of per-GPU attestation evidence dicts,
             each containing:
-                - "type"      (str): GPU TEE type (e.g., "gpu-nvidia").
+                - "type"      (str): GPU device type. Must be one of
+                  SUPPORTED_GPU_TYPES (e.g., "gpu-nvidia"); it selects the
+                  ``components.gpu`` policy rules applied to that device.
                 - "evidence"  (str): Base64-encoded GPU attestation evidence.
                 - "device-index"  (int): GPU device index (used for ordering).
             Each GPU is verified when required by the policy or when binding
