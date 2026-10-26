@@ -86,11 +86,14 @@
           },
           "report-data-binding": {
             "type": "boolean",
-            "description": "When true, the expected CPU report_data is recomputed as SHA-512(nonce || wrapping_key || SHA-512(gpu0_evidence) || ...), binding the wrapping key and any GPU evidence to the CPU TEE. Required for this endpoint."
+            "enum": [
+              true
+            ],
+            "description": "The expected CPU report_data is always recomputed as SHA-512(nonce || wrapping_key || SHA-512(gpu0_evidence) || ...), binding the wrapping key and any GPU evidence to the CPU TEE. Required as the literal JSON Boolean true. False, missing, null, and non-Boolean values are rejected with HTTP 400. There is no operator opt-out; raw-nonce evidence is not accepted. Required GPU verification and policy claims are enforced independently."
           },
           "wrapping-key": {
             "type": "string",
-            "description": "Base64-encoded client public key for wrapping"
+            "description": "Base64-encoded PEM or DER RSA public key of at least 2048 bits. Validated before attestation verification; malformed, non-RSA, private, or undersized keys are rejected with HTTP 400. The original decoded bytes are used for binding and wrapping."
           },
           "component-evidence": {
             "$ref": "#/components/schemas/ComponentEvidence"
@@ -107,7 +110,7 @@
       },
       "ComponentEvidence": {
         "type": "object",
-        "description": "Optional attestation evidence for additional components (e.g. GPUs) verified alongside the CPU TEE. Keyed by component type.",
+        "description": "Optional attestation evidence for additional components (e.g. GPUs) keyed by component type. Evidence required by the selected policy is verified alongside the CPU TEE regardless of report-data binding.",
         "properties": {
           "gpu": {
             "type": "array",

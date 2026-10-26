@@ -20,6 +20,7 @@ from .exceptions import KBMResponseError, KBMUnavailableError
 from .nonce import store_nonce, validate_nonce
 from .tas_logging import get_logger
 from .tas_vm import vm_verify
+from .wrapping_key import load_rsa_public_key
 
 logger = get_logger(__name__)
 
@@ -114,12 +115,18 @@ def get_secret():
     logger.debug(f"Received TEE evidence: {tee_evidence}")
     logger.debug(f"Received Policy ID: {policy_id}")
 
-    # Report data binding is required for this route,
-    # create a new route for non-binding use cases if needed in the future
     report_data_binding = data.get("report-data-binding")
     if report_data_binding is None:
         logger.error("Secret request missing report data binding")
         return jsonify({"error": "Report data binding is required"}), 400
+
+    if not isinstance(report_data_binding, bool):
+        logger.error("Secret request report data binding is not a Boolean")
+        return jsonify({"error": "Report data binding must be a Boolean"}), 400
+
+    if not report_data_binding:
+        logger.error("Secret request attempted to disable required report data binding")
+        return jsonify({"error": "Report data binding must be enabled"}), 400
 
     logger.debug(f"Received report data binding: {report_data_binding}")
 
@@ -146,9 +153,22 @@ def get_secret():
     logger.debug(f"Received public key: {wrapping_key.hex()}")
 
     # Validate the public key
-    if not isinstance(wrapping_key, bytes):
-        logger.error("Invalid wrapping key format: not bytes")
+    if not isinstance(wrapping_key, bytes) or not wrapping_key:
+        logger.error("Invalid wrapping key format: expected nonempty bytes")
         return jsonify({"error": "Invalid wrapping key format"}), 400
+
+    try:
+        load_rsa_public_key(wrapping_key)
+    except ValueError as e:
+        logger.error(f"Invalid wrapping key: {e}")
+        return (
+            jsonify(
+                {
+                    "error": "Wrapping key must be an RSA public key of at least 2048 bits"
+                }
+            ),
+            400,
+        )
 
     # Call vm_verify to validate the parameters — always uses primary Redis
     # for policy lookup, cert caching, and collateral caching
@@ -161,7 +181,7 @@ def get_secret():
         tee_evidence,
         policy_id,
         wrapping_key=wrapping_key,
-        report_data_binding=report_data_binding,
+        report_data_binding=True,
         gpu_list=gpu_list,
     )
     if not is_verified:

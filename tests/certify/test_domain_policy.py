@@ -7,7 +7,9 @@
 # This file is part of the TEE Attestation Service.
 #
 
+import base64
 import json
+from unittest.mock import Mock
 
 import pytest
 from flask import Flask
@@ -581,3 +583,58 @@ class TestDomainVerify:
         assert ok is False
         assert err == "GPU 0: bad evidence"
         assert verify_calls["n"] == 0
+
+    def test_shared_gpu_results_apply_each_candidate_policy(
+        self, app, redis, monkeypatch
+    ):
+        """Verify GPU evidence once across domain candidates while evaluating each policy's GPU claims."""
+        nvidia = pytest.importorskip("nvidia_pytools")
+        _seed_domain(redis, "prod", ["pol-a", "pol-b"])
+        # pol-a requires x-nvidia-overall-att-result=False (will fail); pol-b requires True (will pass).
+        for member, required_result in [("pol-a", False), ("pol-b", True)]:
+            policy = _certify_policy(member)
+            policy["components"] = {
+                "gpu": {
+                    "gpu-nvidia": {
+                        "version": "4.0",
+                        "authorization-rules": {
+                            "type": "JWT",
+                            "overall-claims": {
+                                "x-nvidia-overall-att-result": required_result
+                            },
+                        },
+                    }
+                }
+            }
+            redis.set(f"certify-policy:{member}", json.dumps(policy))
+        results = [
+            {
+                "device_index": 0,
+                "type": "gpu-nvidia",
+                "claims": nvidia.GpuClaims(
+                    raw_overall_claims={"x-nvidia-overall-att-result": True}
+                ),
+                "evidence_hash": b"\x01" * 64,
+            }
+        ]
+        gpu = Mock(return_value=(True, None, results))
+        cpu = Mock(return_value=(True, None))
+        validate = Mock(wraps=tas_vm.gpu_validate_claims)
+        monkeypatch.setattr(tas_vm, "_verify_gpu_evidence_list", gpu)
+        monkeypatch.setattr(tas_vm, "sev_vm_verify", cpu)
+        monkeypatch.setattr(tas_vm, "gpu_validate_claims", validate)
+        with app.app_context():
+            result = tas_vm.domain_verify(
+                redis,
+                "nonce",
+                "amd-sev-snp",
+                base64.b64encode(b"cpu-evidence").decode(),
+                "prod",
+                wrapping_key=b"key",
+                report_data_binding=True,
+                gpu_list=[{"type": "gpu-nvidia", "device-index": 0}],
+            )
+        assert result == (True, "key-pol-b", None)
+        gpu.assert_called_once()
+        assert validate.call_count == 2
+        cpu.assert_called_once()

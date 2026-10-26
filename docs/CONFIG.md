@@ -136,6 +136,25 @@ Stored in Flask's config; set directly via env without prefix:
 | TAS_POLICY_TRUST | str | *(not set)* | No | Path to a directory or PEM file containing trusted public keys used to verify policy signatures. If set, keys are loaded at startup; if no valid keys are found and signed-policy enforcement is enabled, the application refuses to start. |
 | TAS_ENFORCE_SIGNED_POLICIES | bool | `true` | No | Controls whether policy signatures are checked. When `true` (default), signed policies must pass signature verification and unsigned policies are rejected. When `false`, all signature checks are skipped. **Warning: Set to `false` only for testing. Never disable in production — tampered or fake policies will be accepted.** |
 
+### Secret-release data binding
+
+Secret release through `/kb/v0/get_secret` always requires report-data binding.
+Requests must contain `"report-data-binding": true` using the literal JSON
+Boolean `true`. Boolean `false`, missing or `null` values, numbers such as `0`
+or `1`, and strings such as `"true"` or `"false"` are rejected with HTTP 400.
+There is no operator opt-out. The endpoint does not accept raw-nonce evidence:
+the CPU report data must bind the nonce, wrapping key, and any GPU evidence.
+
+Verification and GPU policy checks required by the selected policy remain
+mandatory. The base64-decoded wrapping key must parse as a PEM or DER RSA
+public key of at least 2048 bits. Malformed, non-RSA, private, or undersized
+keys are rejected with HTTP 400 before attestation verification or backend
+retrieval. The original decoded bytes are used for binding and wrapping.
+
+**Compatibility:** clients previously sending `false` must switch to bound
+evidence and send `true`. Generic attestation-only verification can still use
+raw-nonce mode, but must enforce GPU requirements in its selected policy.
+
 ### Nested TAS settings
 
 These live under `app.config["TAS"]` as a nested dictionary. Set them in the YAML/JSON config file under the top-level `TAS:` key, or override individually with `TAS_OVERRIDE__section__key=value`.
@@ -320,4 +339,3 @@ export TAS_API_KEY='...'
 export TAS_MANAGEMENT_API_KEY='...'
 gunicorn -w 4 -b 0.0.0.0:5000 app:app
 ```
-

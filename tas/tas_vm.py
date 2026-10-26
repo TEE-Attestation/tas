@@ -1091,16 +1091,16 @@ def verify(
         report_data_binding (bool, optional): When True (and wrapping_key is provided),
             the expected report_data is computed as SHA-512(nonce || wrapping_key
             [|| SHA-512(gpu0_evidence) || SHA-512(gpu1_evidence) || ...])
-            instead of using the raw nonce. Must be provided
-            in the request; cannot be None.
+            instead of using the raw nonce. GPU requirements in the policy
+            are enforced independently of this binding mode.
         gpu_list (list, optional): List of per-GPU attestation evidence dicts,
             each containing:
                 - "type"      (str): GPU TEE type (e.g., "gpu-nvidia").
                 - "evidence"  (str): Base64-encoded GPU attestation evidence.
                 - "device-index"  (int): GPU device index (used for ordering).
-            When present and report_data_binding is True, each GPU is verified
-            independently via gpu_vm_verify and its SHA-512 evidence hash is
-            appended to the report_data binding computation.
+            Each GPU is verified when required by the policy or when binding
+            is enabled with a wrapping key. Evidence hashes are appended to the
+            report_data computation only when binding is enabled.
         gpu_results (list, optional): Pre-verified GPU evidence produced by
             :func:`_verify_gpu_evidence_list`. When provided, per-GPU evidence is
             not re-verified here; only this policy's GPU claims are applied. This
@@ -1132,36 +1132,36 @@ def verify(
             "Policy requires GPU attestation but no GPU evidence provided",
         )
 
-    # If GPU evidence provided but no GPU policy, log warning (still verify GPUs)
     if gpu_list and not gpu_component_policy:
         logger.warning(
             "GPU evidence provided but policy has no 'components.gpu' section — "
-            "GPU attestation will proceed without policy validation"
+            "no GPU policy claims will be evaluated"
         )
 
+    binding_enabled = bool(report_data_binding and wrapping_key)
+    if gpu_list and (gpu_component_policy or binding_enabled):
+        # Domain verification may supply authenticated results shared by several
+        # candidate policies; each policy must still evaluate its own claims.
+        if gpu_results is None:
+            gpu_ok, gpu_err, gpu_results = _verify_gpu_evidence_list(
+                redis_client, gpu_list, nonce
+            )
+            if not gpu_ok:
+                return False, gpu_err
+
+        policy_ok, policy_err = _apply_gpu_claims_policy(
+            gpu_component_policy, gpu_results
+        )
+        if not policy_ok:
+            return False, policy_err
+
     # --- Compute expected report_data ---
-    if report_data_binding and wrapping_key:
+    if binding_enabled:
         # Recompute the same SHA-512 binding the agent used
         hash_input = nonce.encode("utf-8") + wrapping_key
 
         # Include per-GPU evidence hashes
         if gpu_list:
-            # Evidence verification is policy-independent. In the certify/domain
-            # flow the caller verifies the GPUs once and passes the results in,
-            # so here we only (re)apply this policy's GPU claims.
-            if gpu_results is None:
-                gpu_ok, gpu_err, gpu_results = _verify_gpu_evidence_list(
-                    redis_client, gpu_list, nonce
-                )
-                if not gpu_ok:
-                    return False, gpu_err
-
-            policy_ok, policy_err = _apply_gpu_claims_policy(
-                gpu_component_policy, gpu_results
-            )
-            if not policy_ok:
-                return False, policy_err
-
             # Append SHA-512 hashes: SHA512(gpu0_raw) || SHA512(gpu1_raw) || ...
             for result in gpu_results:
                 hash_input += result["evidence_hash"]

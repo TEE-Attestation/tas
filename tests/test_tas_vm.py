@@ -12,7 +12,9 @@ import hashlib
 import json
 from unittest.mock import MagicMock, patch
 
-from tas.tas_vm import gpu_vm_verify, vm_verify
+import pytest
+
+from tas.tas_vm import gpu_vm_verify, verify, vm_verify
 
 # A minimal valid policy JSON for mocking get_policy_from_redis
 _MOCK_POLICY = {"metadata": {"key_id": "test-key"}, "validation_rules": {}}
@@ -758,6 +760,137 @@ class TestVmVerifyGpuPolicy:
         )
 
         mock_validate.assert_not_called()
+
+
+@pytest.mark.parametrize("tee_type", ["amd-sev-snp", "intel-tdx"])
+@pytest.mark.parametrize(
+    "binding,wrapping_key",
+    [(True, b"key"), (False, b"key"), (True, b""), (True, None)],
+)
+@pytest.mark.parametrize("failure", [None, "evidence", "claims", "cpu", "missing"])
+def test_required_gpu_checks_independent_of_binding(
+    tee_type, binding, wrapping_key, failure
+):
+    """Enforce GPU evidence and policy claims whenever components.gpu is present, regardless of binding."""
+    raw_gpu = b"gpu-evidence"
+    gpu_list = [
+        {
+            "type": "gpu-nvidia",
+            "device-index": 0,
+            "evidence": TestVmVerifyGpuPolicy._make_envelope(raw_gpu),
+        }
+    ]
+    if failure == "missing":
+        gpu_list = []
+    gpu_result = (
+        (False, None, "GPU evidence rejected")
+        if failure == "evidence"
+        else (True, MagicMock(), None)
+    )
+    claims_result = (
+        (False, "GPU claims rejected") if failure == "claims" else (True, None)
+    )
+    cpu_result = (False, "CPU policy rejected") if failure == "cpu" else (True, None)
+    with (
+        patch(
+            "tas.tas_vm.get_policy_from_redis",
+            return_value=(_POLICY_WITH_GPU, "gpu-test-key"),
+        ),
+        patch("tas.tas_vm.gpu_vm_verify", return_value=gpu_result) as gpu,
+        patch("tas.tas_vm.gpu_validate_claims", return_value=claims_result) as claims,
+        patch("tas.tas_vm.sev_vm_verify", return_value=cpu_result) as sev,
+        patch("tas.tas_vm.tdx_vm_verify", return_value=cpu_result) as tdx,
+    ):
+        ok, key_id, error = vm_verify(
+            MagicMock(),
+            "nonce",
+            tee_type,
+            base64.b64encode(b"cpu-evidence").decode(),
+            "combined-policy",
+            wrapping_key=wrapping_key,
+            report_data_binding=binding,
+            gpu_list=gpu_list,
+        )
+
+    cpu = sev if tee_type == "amd-sev-snp" else tdx
+    other_cpu = tdx if tee_type == "amd-sev-snp" else sev
+    other_cpu.assert_not_called()
+    if failure:
+        assert ok is False
+        assert key_id is None
+        expected_errors = {
+            "missing": "Policy requires GPU attestation but no GPU evidence provided",
+            "evidence": "GPU evidence rejected",
+            "claims": "GPU claims rejected",
+            "cpu": "CPU policy rejected",
+        }
+        assert error == expected_errors[failure]
+    else:
+        assert (ok, key_id, error) == (True, "gpu-test-key", None)
+
+    if failure == "missing":
+        gpu.assert_not_called()
+    else:
+        gpu.assert_called_once()
+        assert gpu.call_args.kwargs["expected_nonce"] == "nonce"
+    if failure in ("missing", "evidence"):
+        claims.assert_not_called()
+    else:
+        claims.assert_called_once_with(_NVIDIA_GPU_POLICY, gpu_result[1], 0)
+    if failure in ("missing", "evidence", "claims"):
+        # GPU failures short-circuit before dispatching to the CPU TEE verifier.
+        cpu.assert_not_called()
+    else:
+        cpu.assert_called_once()
+        # Only bound mode with a non-empty wrapping key hashes the key and GPU evidence;
+        # unbound or empty-key mode uses the raw nonce bytes for CPU report_data.
+        expected = b"nonce"
+        if binding and wrapping_key:
+            expected = hashlib.sha512(
+                expected + wrapping_key + hashlib.sha512(raw_gpu).digest()
+            ).digest()
+        assert cpu.call_args.kwargs["expected_report_data"] == expected
+
+
+@pytest.mark.parametrize("binding", [True, False])
+@pytest.mark.parametrize("policy_passes", [True, False])
+def test_preverified_gpu_results_still_apply_policy(binding, policy_passes):
+    """Reuse pre-verified GPU results without re-verifying evidence, while still checking policy claims."""
+    claims = MagicMock()
+    results = [
+        {
+            "device_index": 0,
+            "type": "gpu-nvidia",
+            "claims": claims,
+            "evidence_hash": hashlib.sha512(b"gpu-evidence").digest(),
+        }
+    ]
+    with (
+        patch("tas.tas_vm._verify_gpu_evidence_list") as gpu_verify,
+        patch(
+            "tas.tas_vm.gpu_validate_claims",
+            return_value=(
+                policy_passes,
+                None if policy_passes else "GPU claims rejected",
+            ),
+        ) as validate,
+        patch("tas.tas_vm.sev_vm_verify", return_value=(True, None)) as cpu,
+    ):
+        result = verify(
+            MagicMock(),
+            "nonce",
+            "amd-sev-snp",
+            base64.b64encode(b"cpu-evidence").decode(),
+            _POLICY_WITH_GPU,
+            wrapping_key=b"key",
+            report_data_binding=binding,
+            gpu_list=[{"type": "gpu-nvidia", "device-index": 0}],
+            gpu_results=results,
+        )
+    gpu_verify.assert_not_called()
+    validate.assert_called_once_with(_NVIDIA_GPU_POLICY, claims, 0)
+    assert result == (policy_passes, None if policy_passes else "GPU claims rejected")
+    assert cpu.call_count == int(policy_passes)
 
 
 # ── gpu_vm_verify with policy tests ────────────────────────────────

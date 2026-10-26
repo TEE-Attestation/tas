@@ -166,6 +166,28 @@ For each claim, the actual value reported by NRAS must match the value in the
 policy. Nested objects (such as certificate-chain status) are matched field by
 field.
 
+### GPU requirements and report-data binding
+
+A nonempty `components.gpu` section requires GPU evidence. TAS verifies that
+evidence and evaluates the applicable GPU claims independently of report-data
+binding. CPU policy checks still run, and a failed GPU check prevents
+verification under the selected combined policy.
+
+Binding additionally commits the nonce, wrapping key, and GPU evidence hashes
+to the CPU report data. It controls digest construction, not whether required
+GPU policy checks run. In generic attestation-only verification, when a policy
+has no GPU requirements, optional GPU evidence is verified when included in a
+bound request, and is not evaluated when binding is disabled.
+
+Secret release through `/kb/v0/get_secret` always requires binding, with no
+operator opt-out. Requests must contain `"report-data-binding": true` using
+the literal JSON Boolean `true`. Boolean `false`, missing or `null` values,
+and non-Boolean values are rejected with HTTP 400. Raw-nonce evidence is not
+accepted by this endpoint; see
+[secret-release data binding](CONFIG.md#secret-release-data-binding).
+Generic attestation-only verification can still use raw-nonce mode, but cannot
+skip GPU requirements in its selected policy.
+
 ### Example
 
 ```json
