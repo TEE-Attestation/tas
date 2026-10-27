@@ -258,9 +258,21 @@ class TestRedisVersionCheck:
 
 from unittest.mock import MagicMock, patch
 
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 from flask import Flask
 
 from tas.client_routes import client_bp, get_nonce_redis, get_redis
+
+_TEST_RSA_PUBLIC_KEY = (
+    rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    .public_key()
+    .public_bytes(
+        serialization.Encoding.PEM,
+        serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+)
+_TEST_WRAPPING_KEY_B64 = base64.b64encode(_TEST_RSA_PUBLIC_KEY).decode("ascii")
 
 
 def _make_app(with_ephemeral=False):
@@ -324,7 +336,7 @@ class TestNonceRedisRouting:
             "tee-evidence": "evidence",
             "policy-id": "policy:test",
             "report-data-binding": True,
-            "wrapping-key": base64.b64encode(b"pk").decode("ascii"),
+            "wrapping-key": _TEST_WRAPPING_KEY_B64,
         }
 
         with (
@@ -370,7 +382,7 @@ class TestNonceRedisRouting:
             "tee-evidence": "evidence",
             "policy-id": "policy:sev:test-policy",
             "report-data-binding": True,
-            "wrapping-key": base64.b64encode(b"pk").decode("ascii"),
+            "wrapping-key": _TEST_WRAPPING_KEY_B64,
         }
 
         with patch("tas.client_routes.authenticate_request", return_value=None):
