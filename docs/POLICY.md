@@ -159,6 +159,18 @@ a policy carries a `components.gpu` section, **every** GPU presented must be
 covered by a rule for its device type — a verified GPU whose type has no entry
 under `components.gpu` fails the policy rather than being skipped.
 
+The shape of `components` is validated when a policy (or certify-policy) is
+stored, and the store request is rejected with HTTP 400 if:
+
+- `components` is not an object, or contains a component type other than `gpu`;
+- `components.gpu` is not a non-empty object, or contains a device type other
+  than the supported ones (currently `gpu-nvidia`);
+- a device-type entry is not an object with an `authorization-rules` object, or
+  its `overall-claims` / `detached-claims` are present but not objects.
+
+A policy whose `components` or `components.gpu` section is present but malformed
+also **fails verification** rather than being treated as having no GPU rules.
+
 The object under `gpu-nvidia` is an **NVIDIA attestation policy** consumed by
 [`nvidia_pytools`](https://github.com/TEE-Attestation/nvidia_pytools). It
 validates the claims returned by the NVIDIA Remote Attestation Service (NRAS)

@@ -177,6 +177,45 @@ class TestManagementStorePolicy:
         )
         assert resp.status_code == 400
 
+    def test_store_policy_malformed_components_rejected(self, client, mgmt_headers):
+        """A non-object components.gpu must be rejected at store time."""
+        for bad_gpu in (
+            "gpu-nvidia",
+            [{"gpu-nvidia": {"authorization-rules": {}}}],
+            {},
+            {"GPU-NVIDIA": {"authorization-rules": {}}},
+        ):
+            payload = json.loads(json.dumps(VALID_POLICY_PAYLOAD))
+            payload["components"] = {"gpu": bad_gpu}
+            resp = client.post(
+                "/management/policy/v0/store",
+                headers=mgmt_headers,
+                data=json.dumps(payload),
+            )
+            assert resp.status_code == 400, bad_gpu
+            assert "components.gpu" in resp.get_json()["error"]
+
+    def test_store_policy_well_formed_components_accepted(self, client, mgmt_headers):
+        payload = json.loads(json.dumps(VALID_POLICY_PAYLOAD))
+        payload["metadata"]["policy_id"] = "test-sev-gpu-policy-001"
+        payload["components"] = {
+            "gpu": {
+                "gpu-nvidia": {
+                    "version": "4.0",
+                    "authorization-rules": {
+                        "type": "JWT",
+                        "detached-claims": {"measres": "success"},
+                    },
+                }
+            }
+        }
+        resp = client.post(
+            "/management/policy/v0/store",
+            headers=mgmt_headers,
+            data=json.dumps(payload),
+        )
+        assert resp.status_code == 201
+
     def test_store_policy_duplicate_rejected(self, client, mgmt_headers, app):
         """Storing a policy with the same policy_id twice should return 409."""
         app.extensions["redis"].set(

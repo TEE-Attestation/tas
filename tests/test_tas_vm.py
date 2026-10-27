@@ -1200,6 +1200,167 @@ class TestVmVerifyGpuPolicy:
         assert "no rules for device type" in err
         mock_validate.assert_not_called()
 
+    # -- malformed components / components.gpu fail closed -----------------
+
+    @patch("tas.tas_vm.gpu_validate_claims", return_value=(True, None))
+    def test_apply_gpu_claims_policy_none_means_no_policy(self, mock_validate):
+        from tas.tas_vm import _apply_gpu_claims_policy
+
+        gpu_results = [
+            {
+                "device_index": 0,
+                "type": "gpu-nvidia",
+                "claims": MagicMock(),
+                "evidence_hash": b"\x00" * 64,
+            }
+        ]
+        assert _apply_gpu_claims_policy(None, gpu_results) == (True, None)
+        mock_validate.assert_not_called()
+
+    @patch("tas.tas_vm.gpu_validate_claims", return_value=(True, None))
+    def test_apply_gpu_claims_policy_non_dict_fails_closed(self, mock_validate):
+        """A truthy non-dict components.gpu is malformed and must not pass.
+
+        Regression test: a non-dict value previously short-circuited to
+        ``(True, None)``, so a malformed policy validated nothing.
+        """
+        from tas.tas_vm import _apply_gpu_claims_policy
+
+        gpu_results = [
+            {
+                "device_index": 0,
+                "type": "gpu-nvidia",
+                "claims": MagicMock(),
+                "evidence_hash": b"\x00" * 64,
+            }
+        ]
+        for bad in [[{"gpu-nvidia": _NVIDIA_GPU_POLICY}], "gpu-nvidia", 1, True]:
+            ok, err = _apply_gpu_claims_policy(bad, gpu_results)
+            assert ok is False, f"{bad!r} accepted"
+            assert err == "Policy 'components.gpu' section is malformed"
+        mock_validate.assert_not_called()
+
+    def test_extract_gpu_component_policy_shapes(self):
+        from tas.tas_vm import _extract_gpu_component_policy
+
+        gpu = {"gpu-nvidia": _NVIDIA_GPU_POLICY}
+
+        # Absent / null sections mean "no GPU rules".
+        assert _extract_gpu_component_policy({}) == (None, None)
+        assert _extract_gpu_component_policy({"components": None}) == (None, None)
+        assert _extract_gpu_component_policy({"components": {}}) == (None, None)
+        assert _extract_gpu_component_policy({"components": {"gpu": None}}) == (
+            None,
+            None,
+        )
+        # Well-formed.
+        assert _extract_gpu_component_policy({"components": {"gpu": gpu}}) == (
+            gpu,
+            None,
+        )
+        # Malformed `components`.
+        for bad in ["gpu", 1, True, [gpu], [{"gpu": gpu}]]:
+            policy, err = _extract_gpu_component_policy({"components": bad})
+            assert policy is None
+            assert err == "Policy 'components' section is malformed", f"{bad!r}"
+        # Malformed `components.gpu` (non-dict or empty).
+        for bad in [[gpu], "gpu-nvidia", 1, True, {}]:
+            policy, err = _extract_gpu_component_policy({"components": {"gpu": bad}})
+            assert policy is None
+            assert err == "Policy 'components.gpu' section is malformed", f"{bad!r}"
+
+    @patch("tas.tas_vm.gpu_validate_claims", return_value=(True, None))
+    @patch("tas.tas_vm.gpu_vm_verify", return_value=(True, MagicMock(), None))
+    @patch("tas.tas_vm.sev_vm_verify")
+    def test_vm_verify_fails_closed_on_malformed_components(
+        self, mock_sev, mock_gpu, mock_validate
+    ):
+        """A stored policy with a malformed GPU section fails before any verification."""
+        mock_sev.return_value = (True, None)
+        gpu_evidence = [
+            {
+                "type": "gpu-nvidia",
+                "evidence": self._make_envelope(b"\xdd"),
+                "device-index": 0,
+            },
+        ]
+        gpu = {"gpu-nvidia": _NVIDIA_GPU_POLICY}
+        cases = [
+            ({"components": "gpu"}, "Policy 'components' section is malformed"),
+            (
+                {"components": [{"gpu": gpu}]},
+                "Policy 'components' section is malformed",
+            ),
+            (
+                {"components": {"gpu": [gpu]}},
+                "Policy 'components.gpu' section is malformed",
+            ),
+            (
+                {"components": {"gpu": "gpu-nvidia"}},
+                "Policy 'components.gpu' section is malformed",
+            ),
+            (
+                {"components": {"gpu": True}},
+                "Policy 'components.gpu' section is malformed",
+            ),
+            (
+                {"components": {"gpu": {}}},
+                "Policy 'components.gpu' section is malformed",
+            ),
+        ]
+        for components, expected_error in cases:
+            policy = {
+                "metadata": {"key_id": "k"},
+                "validation_rules": {},
+                **components,
+            }
+            with patch("tas.tas_vm.get_policy_from_redis", return_value=(policy, "k")):
+                # With and without GPU evidence: a malformed policy never passes.
+                for gpu_list in (gpu_evidence, None):
+                    ok, key_id, err = vm_verify(
+                        MagicMock(),
+                        self.NONCE,
+                        "amd-sev-snp",
+                        self.TEE_EVIDENCE_B64,
+                        self.KEY_ID,
+                        wrapping_key=self.WRAPPING_KEY,
+                        report_data_binding=True,
+                        gpu_list=gpu_list,
+                    )
+                    assert ok is False, f"{components!r} with gpu_list={gpu_list!r}"
+                    assert key_id is None
+                    assert err == expected_error
+        mock_gpu.assert_not_called()
+        mock_validate.assert_not_called()
+        mock_sev.assert_not_called()
+
+    @patch("tas.tas_vm.gpu_validate_claims", return_value=(True, None))
+    @patch("tas.tas_vm.gpu_vm_verify", return_value=(True, MagicMock(), None))
+    @patch("tas.tas_vm.sev_vm_verify")
+    def test_vm_verify_null_components_means_no_gpu_policy(
+        self, mock_sev, mock_gpu, mock_validate
+    ):
+        """components: null / components.gpu: null are treated as absent."""
+        mock_sev.return_value = (True, None)
+        for components in ({"components": None}, {"components": {"gpu": None}}):
+            policy = {
+                "metadata": {"key_id": "k"},
+                "validation_rules": {},
+                **components,
+            }
+            with patch("tas.tas_vm.get_policy_from_redis", return_value=(policy, "k")):
+                ok, key_id, err = vm_verify(
+                    MagicMock(),
+                    self.NONCE,
+                    "amd-sev-snp",
+                    self.TEE_EVIDENCE_B64,
+                    self.KEY_ID,
+                    wrapping_key=self.WRAPPING_KEY,
+                    report_data_binding=True,
+                    gpu_list=None,
+                )
+            assert (ok, key_id, err) == (True, "k", None), f"{components!r}"
+
 
 @pytest.mark.parametrize("tee_type", ["amd-sev-snp", "intel-tdx"])
 @pytest.mark.parametrize(

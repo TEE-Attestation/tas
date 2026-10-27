@@ -138,6 +138,24 @@ class TestCertifyPolicyManagement:
         resp = self._store(client, client_headers, _certify_policy("pol-a"))
         assert resp.status_code == 401
 
+    def test_store_malformed_components_rejected(self, client, mgmt_headers, redis):
+        """Certify-policies share the components shape check with secret policies."""
+        policy = _certify_policy("pol-gpu")
+        policy["components"] = {"gpu": [{"gpu-nvidia": {"authorization-rules": {}}}]}
+        resp = self._store(client, mgmt_headers, policy)
+        assert resp.status_code == 400
+        assert "components.gpu" in resp.get_json()["error"]
+        assert redis.get("certify-policy:pol-gpu") is None
+
+    def test_store_well_formed_components_accepted(self, client, mgmt_headers, redis):
+        policy = _certify_policy("pol-gpu")
+        policy["components"] = {
+            "gpu": {"gpu-nvidia": {"authorization-rules": {"type": "JWT"}}}
+        }
+        resp = self._store(client, mgmt_headers, policy)
+        assert resp.status_code == 201
+        assert redis.get("certify-policy:pol-gpu") is not None
+
     def test_store_duplicate_rejected(self, client, mgmt_headers):
         self._store(client, mgmt_headers, _certify_policy("pol-a"))
         resp = self._store(client, mgmt_headers, _certify_policy("pol-a"))

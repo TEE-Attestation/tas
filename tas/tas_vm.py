@@ -25,6 +25,8 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, padding, utils
 from flask import current_app
 
+from tas.components import SUPPORTED_GPU_TYPES
+
 try:
     from tas.components.gpu_nvidia import (
         gpu_get_collateral_refs,
@@ -83,11 +85,11 @@ logger = get_logger(__name__)
 POLICY_TYPE_BY_TEE = {"amd-sev-snp": "SEV", "intel-tdx": "TDX"}
 SUPPORTED_TEE_TYPES = frozenset(POLICY_TYPE_BY_TEE)
 
-# GPU device types TAS knows how to verify. A policy's ``components.gpu`` is
-# keyed by these same values, so the client-supplied ``type`` must be one of
-# them: an unrecognised type would otherwise be verified by the NVIDIA
-# verifier regardless and then fall outside every policy rule.
-SUPPORTED_GPU_TYPES = frozenset({"gpu-nvidia"})
+# SUPPORTED_GPU_TYPES (imported from tas.components) lists the GPU device
+# types TAS verifies. A policy's ``components.gpu`` is keyed by these same
+# values, so a client-supplied ``type`` must be one of them: an unrecognised
+# type would otherwise be verified by the NVIDIA verifier regardless and then
+# fall outside every policy rule.
 
 # Default upper bound on per-request GPU evidence entries; overridable via the
 # TAS_GPU_MAX_EVIDENCE_ENTRIES config key (see _resolve_gpu_max_evidence_entries).
@@ -1147,6 +1149,46 @@ def _verify_gpu_evidence_list(redis_client, gpu_list, nonce):
     return True, None, results
 
 
+def _extract_gpu_component_policy(policy_json):
+    """
+    Pull the ``components.gpu`` section out of a policy, enforcing its shape.
+
+    A policy is trusted content, but a malformed one must fail closed rather
+    than be read as "no GPU rules". ``components`` (when present) must be an
+    object, and ``components.gpu`` (when present) must be a non-empty object
+    keyed by device type. Upload-time validation (see
+    :func:`tas.policy_helper.validate_policy_components`) rejects such
+    policies, so this guards policies stored before that check existed.
+
+    Returns:
+        (gpu_component_policy, error): ``gpu_component_policy`` is the dict
+        under ``components.gpu``, or None when the policy has no GPU section.
+        ``error`` is set (and the policy is None) when the section is present
+        but malformed.
+    """
+    components = policy_json.get("components")
+    if components is None:
+        return None, None
+    if not isinstance(components, dict):
+        logger.error(
+            f"Policy 'components' section is malformed: expected object, got "
+            f"{type(components).__name__}"
+        )
+        return None, "Policy 'components' section is malformed"
+
+    gpu_component_policy = components.get("gpu")
+    if gpu_component_policy is None:
+        return None, None
+    if not isinstance(gpu_component_policy, dict) or not gpu_component_policy:
+        logger.error(
+            f"Policy 'components.gpu' section is malformed: expected non-empty "
+            f"object, got {type(gpu_component_policy).__name__}"
+        )
+        return None, "Policy 'components.gpu' section is malformed"
+
+    return gpu_component_policy, None
+
+
 def _apply_gpu_claims_policy(gpu_component_policy, gpu_results):
     """
     Evaluate a certify-policy's GPU claims requirements against already-verified
@@ -1158,14 +1200,22 @@ def _apply_gpu_claims_policy(gpu_component_policy, gpu_results):
 
     Returns:
         (ok, error): ``ok`` True when every GPU satisfies the policy, else
-        False with an error. When the policy carries a ``components.gpu``
-        section, every verified GPU must be covered by a rule for its device
-        type; a GPU with no matching rule fails rather than being skipped, so
-        the policy cannot be sidestepped by presenting a device type it does
-        not mention.
+        False with an error. ``gpu_component_policy`` None means the policy has
+        no GPU section and nothing is checked; any other non-dict value is a
+        malformed policy and fails closed. When the policy carries a
+        ``components.gpu`` section, every verified GPU must be covered by a
+        rule for its device type; a GPU with no matching rule fails rather
+        than being skipped, so the policy cannot be sidestepped by presenting
+        a device type it does not mention.
     """
-    if not isinstance(gpu_component_policy, dict):
+    if gpu_component_policy is None:
         return True, None
+    if not isinstance(gpu_component_policy, dict):
+        logger.error(
+            f"GPU policy section is malformed: expected object, got "
+            f"{type(gpu_component_policy).__name__}"
+        )
+        return False, "Policy 'components.gpu' section is malformed"
 
     for result in gpu_results:
         gpu_type = result["type"]
@@ -1253,11 +1303,12 @@ def verify(
         if gpu_input_error:
             return False, gpu_input_error
 
-    # Extract GPU component policy (if present)
-    gpu_component_policy = None
-    components = policy_json.get("components")
-    if components and isinstance(components, dict):
-        gpu_component_policy = components.get("gpu")
+    # Extract GPU component policy (if present). A malformed section is a
+    # misconfigured policy and fails closed rather than being read as "no
+    # GPU rules".
+    gpu_component_policy, policy_error = _extract_gpu_component_policy(policy_json)
+    if policy_error:
+        return False, policy_error
 
     # Validate: if GPU policy requires GPUs but none were provided
     if gpu_component_policy and not gpu_list:

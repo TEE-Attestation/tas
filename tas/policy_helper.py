@@ -19,6 +19,7 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding
 
+from .components import SUPPORTED_COMPONENT_TYPES, SUPPORTED_GPU_TYPES
 from .tas_logging import get_logger
 
 # Get logger for this module
@@ -198,15 +199,85 @@ def validate_key_component(value, label):
     return True, None
 
 
+def validate_policy_components(policy):
+    """Validate the optional ``components`` section of a TAS policy.
+
+    ``components`` carries requirements for attestable devices beyond the CPU
+    TEE (today only ``gpu``). The verifier reads it as a dict keyed by
+    component type, then device type, then an NVIDIA attestation policy, so a
+    value of the wrong shape must be rejected at store time rather than be
+    silently read as "no rules" when a policy is evaluated.
+
+    Rules (only applied when ``components`` is present):
+
+    - ``components`` is an object whose keys are all supported component types.
+    - ``components.gpu`` is a non-empty object whose keys are all supported GPU
+      device types.
+    - Each device-type entry is an object with an ``authorization-rules``
+      object; its optional ``overall-claims`` / ``detached-claims`` are objects.
+
+    Returns (True, None) if valid, else (False, error_message).
+    """
+    if "components" not in policy:
+        return True, None
+
+    components = policy["components"]
+    if not isinstance(components, dict):
+        return False, "Policy 'components' must be an object"
+
+    unsupported = sorted(set(components) - SUPPORTED_COMPONENT_TYPES)
+    if unsupported:
+        return (
+            False,
+            f"Policy 'components' contains unsupported component type(s): "
+            f"{', '.join(unsupported)}",
+        )
+
+    if "gpu" not in components:
+        return True, None
+
+    gpu_section = components["gpu"]
+    if not isinstance(gpu_section, dict) or not gpu_section:
+        return False, "Policy 'components.gpu' must be a non-empty object"
+
+    unsupported = sorted(set(gpu_section) - SUPPORTED_GPU_TYPES)
+    if unsupported:
+        return (
+            False,
+            f"Policy 'components.gpu' contains unsupported device type(s): "
+            f"{', '.join(unsupported)}",
+        )
+
+    for device_type, device_policy in gpu_section.items():
+        label = f"components.gpu.{device_type}"
+        if not isinstance(device_policy, dict):
+            return False, f"Policy '{label}' must be an object"
+        auth_rules = device_policy.get("authorization-rules")
+        if not isinstance(auth_rules, dict):
+            return (
+                False,
+                f"Policy '{label}' must contain an 'authorization-rules' object",
+            )
+        for rules_key in ("overall-claims", "detached-claims"):
+            if rules_key in auth_rules and not isinstance(auth_rules[rules_key], dict):
+                return (
+                    False,
+                    f"Policy '{label}.authorization-rules.{rules_key}' must be an object",
+                )
+
+    return True, None
+
+
 def validate_policy_metadata(policy, require_key_id=True):
     """Validate the structural requirements shared by TAS policy documents.
 
     Checks the presence of the ``metadata`` and ``validation_rules`` sections
     and the required ``policy_type`` and ``policy_id`` metadata fields,
-    including ``policy_id`` character safety. ``key_id`` names the KMS secret a
-    secret-release policy authorises, so it is required by default; the certify
-    flow does not release secrets and passes ``require_key_id=False`` to make it
-    optional for certify-policies.
+    including ``policy_id`` character safety, and the shape of the optional
+    ``components`` section (see :func:`validate_policy_components`).
+    ``key_id`` names the KMS secret a secret-release policy authorises, so it
+    is required by default; the certify flow does not release secrets and
+    passes ``require_key_id=False`` to make it optional for certify-policies.
 
     Returns (True, None) if valid, else (False, error_message).
     """
@@ -225,6 +296,10 @@ def validate_policy_metadata(policy, require_key_id=True):
         return False, "Key ID is required in metadata"
     if not metadata.get("policy_id"):
         return False, "Policy ID is required in metadata"
+
+    is_valid, error = validate_policy_components(policy)
+    if not is_valid:
+        return False, error
 
     return validate_key_component(str(metadata["policy_id"]), "policy_id")
 

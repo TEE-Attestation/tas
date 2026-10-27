@@ -400,3 +400,162 @@ class TestVerifyPolicySignature:
         public_keys = [("RSA", "test_key.pem", public_key)]
         result = verify_policy_signature(policy_data, public_keys)
         assert result is False
+
+
+# ── validate_policy_components / validate_policy_metadata ───────────────────
+
+
+_NVIDIA_RULES = {
+    "version": "4.0",
+    "authorization-rules": {
+        "type": "JWT",
+        "overall-claims": {"x-nvidia-overall-att-result": True},
+        "detached-claims": {"measres": "success"},
+    },
+}
+
+
+_OMIT = object()
+
+
+def _policy_with(components=_OMIT):
+    policy = {
+        "metadata": {"policy_type": "SEV", "policy_id": "p-1", "key_id": "k-1"},
+        "validation_rules": {},
+    }
+    if components is not _OMIT:
+        policy["components"] = components
+    return policy
+
+
+class TestValidatePolicyComponents:
+    """The optional ``components`` section must have the shape the verifier reads.
+
+    Regression tests: ``components`` was not inspected at store time, so a
+    truthy non-object ``components.gpu`` was accepted and later evaluated as
+    "no GPU rules".
+    """
+
+    def test_absent_components_is_valid(self):
+        from tas.policy_helper import validate_policy_components
+
+        assert validate_policy_components(_policy_with()) == (True, None)
+
+    def test_well_formed_components_is_valid(self):
+        from tas.policy_helper import validate_policy_components
+
+        policy = _policy_with({"gpu": {"gpu-nvidia": _NVIDIA_RULES}})
+        assert validate_policy_components(policy) == (True, None)
+
+    def test_components_without_gpu_is_valid(self):
+        from tas.policy_helper import validate_policy_components
+
+        assert validate_policy_components(_policy_with({})) == (True, None)
+
+    @pytest.mark.parametrize(
+        "bad", [None, "gpu", 1, True, [{"gpu": {}}], ["gpu"]], ids=repr
+    )
+    def test_non_object_components_rejected(self, bad):
+        from tas.policy_helper import validate_policy_components
+
+        ok, err = validate_policy_components(_policy_with(bad))
+        assert ok is False
+        assert err == "Policy 'components' must be an object"
+
+    def test_unsupported_component_type_rejected(self):
+        from tas.policy_helper import validate_policy_components
+
+        policy = _policy_with({"gpu": {"gpu-nvidia": _NVIDIA_RULES}, "GPU": {}})
+        ok, err = validate_policy_components(policy)
+        assert ok is False
+        assert err == "Policy 'components' contains unsupported component type(s): GPU"
+
+    @pytest.mark.parametrize(
+        "bad",
+        [None, "gpu-nvidia", 1, True, {}, [{"gpu-nvidia": _NVIDIA_RULES}]],
+        ids=repr,
+    )
+    def test_non_object_or_empty_gpu_section_rejected(self, bad):
+        from tas.policy_helper import validate_policy_components
+
+        ok, err = validate_policy_components(_policy_with({"gpu": bad}))
+        assert ok is False
+        assert err == "Policy 'components.gpu' must be a non-empty object"
+
+    def test_unsupported_gpu_device_type_rejected(self):
+        from tas.policy_helper import validate_policy_components
+
+        policy = _policy_with({"gpu": {"GPU-NVIDIA": _NVIDIA_RULES}})
+        ok, err = validate_policy_components(policy)
+        assert ok is False
+        assert err == (
+            "Policy 'components.gpu' contains unsupported device type(s): GPU-NVIDIA"
+        )
+
+    @pytest.mark.parametrize("bad", [None, "rules", 1, True, [_NVIDIA_RULES]], ids=repr)
+    def test_non_object_device_policy_rejected(self, bad):
+        from tas.policy_helper import validate_policy_components
+
+        ok, err = validate_policy_components(_policy_with({"gpu": {"gpu-nvidia": bad}}))
+        assert ok is False
+        assert err == "Policy 'components.gpu.gpu-nvidia' must be an object"
+
+    @pytest.mark.parametrize(
+        "device_policy",
+        [
+            {},
+            {"version": "4.0"},
+            {"authorization-rules": None},
+            {"authorization-rules": []},
+        ],
+        ids=repr,
+    )
+    def test_missing_or_non_object_authorization_rules_rejected(self, device_policy):
+        from tas.policy_helper import validate_policy_components
+
+        ok, err = validate_policy_components(
+            _policy_with({"gpu": {"gpu-nvidia": device_policy}})
+        )
+        assert ok is False
+        assert err == (
+            "Policy 'components.gpu.gpu-nvidia' must contain an "
+            "'authorization-rules' object"
+        )
+
+    @pytest.mark.parametrize("rules_key", ["overall-claims", "detached-claims"])
+    def test_non_object_claims_rules_rejected(self, rules_key):
+        from tas.policy_helper import validate_policy_components
+
+        device_policy = {"authorization-rules": {rules_key: ["measres"]}}
+        ok, err = validate_policy_components(
+            _policy_with({"gpu": {"gpu-nvidia": device_policy}})
+        )
+        assert ok is False
+        assert err == (
+            f"Policy 'components.gpu.gpu-nvidia.authorization-rules.{rules_key}' "
+            "must be an object"
+        )
+
+    def test_authorization_rules_without_claims_sections_is_valid(self):
+        from tas.policy_helper import validate_policy_components
+
+        device_policy = {"authorization-rules": {"type": "JWT"}}
+        assert validate_policy_components(
+            _policy_with({"gpu": {"gpu-nvidia": device_policy}})
+        ) == (True, None)
+
+
+class TestValidatePolicyMetadataComponents:
+    def test_metadata_validation_includes_components(self):
+        from tas.policy_helper import validate_policy_metadata
+
+        ok, err = validate_policy_metadata(_policy_with({"gpu": "gpu-nvidia"}))
+        assert ok is False
+        assert err == "Policy 'components.gpu' must be a non-empty object"
+
+    def test_metadata_validation_passes_well_formed_components(self):
+        from tas.policy_helper import validate_policy_metadata
+
+        policy = _policy_with({"gpu": {"gpu-nvidia": _NVIDIA_RULES}})
+        assert validate_policy_metadata(policy) == (True, None)
+        assert validate_policy_metadata(policy, require_key_id=False) == (True, None)
