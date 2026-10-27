@@ -306,14 +306,12 @@ sudo bash ./quickrun.sh uninstall
 - **Python** (>= 3.10)
 - **Redis** (>= 6.2)
 
-**Note:** If you want to use the KMIP KBM plugin, ensure PyKMIP is installed. Note that PyKMIP does not work on Python 3.12 or later because it relies on ssl.wrap_socket(), which was removed in Python 3.12, so your venv will need a Python version between 3.8 and 3.11.
-
 ### Verify Prerequisites
 
 ```bash
 # Check Python installation
 python --version
-# For KMIP should show: Python 3.8.x - 3.11.x
+# TAS requires Python 3.10 or later
 
 # Check Redis connectivity
 redis-cli ping
@@ -674,13 +672,15 @@ attestation policy. A complete example would be
 
 TAS supports pluggable Key Broker Modules (KBM) for different backend key management systems.
 
-### Available Plugins
+TAS verifies the client's attestation and policy before calling a KBM. The
+table compares the backends and wrapping behavior available after verification.
 
-| Plugin | Description | Use Case |
-|--------|-------------|----------|
-| `tas_kbm_kmip_json` | KMIP JSON protocol backend | Production with KMIP servers (Cosmain KMS, etc.) |
-| `tas_kbm_thales_ctm` | Thales CipherTrust Manager backend | Production with Thales CTM for key wrapping and export |
-| `tas_kbm_mock` | Software-based mock | Development and testing |
+| Plugin | Backend | Wrapping | Features | Requirements and notes |
+|--------|---------|----------|----------|-------------------------|
+| `tas_kbm_kmip_json` | KMIP server | Server encrypts with AES-GCM; RSA wraps the AES key. | Retrieves existing secrets; uses temporary wrapping keys per request. | KMIP endpoint and client TLS configuration. |
+| `tas_kbm_thales_ctm` | CipherTrust Manager | CTM wraps with temporary AES; RSA wraps the AES key. | Optional key creation when missing (disabled by default). | CTM endpoint and credentials; Redis locking required for creation. |
+| `tas_kbm_openbao` | OpenBao KV | Plugin encrypts with AES-GCM and wraps the AES key with RSA. | Optional missing-secret creation (disabled by default). | OpenBao endpoint, auth, mount and secret field; creation requires KV v2 CAS. |
+| `tas_kbm_mock` | Local file or SQLite | Plugin uses AES-GCM and RSA wrapping. | File config is read-only; SQLite values persist. | Development/testing only; SQLite is opt-in and stores plaintext. |
 
 ### Plugin Interface
 
