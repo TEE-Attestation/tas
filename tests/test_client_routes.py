@@ -469,3 +469,50 @@ def test_secret_checks_report_data_binding(app, client, report_binding):
         assert response.status_code == 400
         assert response.get_json() == {"error": "TEE verification failed"}
         app.extensions["kbm_get_secret"].assert_not_called()
+
+
+def test_secret_accepts_quoted_agent_nonce_and_binds_unquoted(app, client):
+    """Mirror tas_agent: it posts the JSON-quoted nonce but binds report_data to the bare nonce."""
+    from sev_pytools import AttestationPolicy
+    from sev_pytools.policy import PolicyValidationError
+
+    nonce = "ab" * 32
+    body = _request_body()
+    body["nonce"] = f'"{nonce}"'
+    wrapping_key = base64.b64decode(body["wrapping-key"])
+    report_data = hashlib.sha512(nonce.encode() + wrapping_key).digest()
+    body["tee-evidence"] = base64.b64encode(report_data).decode()
+    app.config["TAS_ENFORCE_SIGNED_POLICIES"] = False
+    redis_client = app.extensions["redis"]
+    redis_client.getdel.return_value = "1"
+    redis_client.get.return_value = json.dumps(
+        {"metadata": {"key_id": "bound-secret"}, "validation_rules": {}}
+    )
+    app.extensions["kbm_get_secret"].return_value = "wrapped-bound-secret"
+
+    def compare_cpu_report_data(
+        redis_client, nonce, evidence, policy, *, expected_report_data
+    ):
+        report = SimpleNamespace(report_data=evidence)
+        try:
+            AttestationPolicy(policy).validate_report(
+                report, report_data=expected_report_data
+            )
+        except PolicyValidationError as error:
+            return False, str(error)
+        return True, None
+
+    with (
+        patch("tas.client_routes.authenticate_request", return_value=None),
+        patch(
+            "tas.tas_vm.sev_vm_verify", side_effect=compare_cpu_report_data
+        ) as cpu_verify,
+    ):
+        response = client.post("/kb/v0/get_secret", json=body)
+
+    assert response.status_code == 200
+    redis_client.getdel.assert_called_once_with(f"nonce:{nonce}")
+    assert cpu_verify.call_args.args[1] == nonce
+    app.extensions["kbm_get_secret"].assert_called_once_with(
+        app.extensions["kbm_client"], "bound-secret", wrapping_key
+    )

@@ -17,7 +17,7 @@ from flask import Blueprint, current_app, jsonify, request
 
 from .auth import authenticate_request
 from .exceptions import KBMResponseError, KBMUnavailableError
-from .nonce import store_nonce, validate_nonce
+from .nonce import normalize_nonce, store_nonce, validate_nonce
 from .tas_logging import get_logger
 from .tas_vm import vm_verify
 from .wrapping_key import load_rsa_public_key
@@ -93,6 +93,8 @@ def get_secret():
         logger.error("Secret request missing nonce field")
         return jsonify({"error": "Nonce is required"}), 400
 
+    # The unquoted nonce is used for both replay protection and report-data binding.
+    nonce = normalize_nonce(nonce)
     nonce_client = get_nonce_redis()
     is_valid, error_message = validate_nonce(nonce_client, nonce)
     if not is_valid:

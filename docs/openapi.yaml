@@ -54,7 +54,8 @@ components:
           description: Type of TEE
         nonce:
           type: string
-          description: Previously obtained nonce
+          description: >-
+            Previously obtained 64-character lowercase hexadecimal nonce. A single surrounding pair of double quotes (as sent by existing tas_agent releases) is removed before validation; the unquoted nonce is used for report-data binding.
         tee-evidence:
           type: string
           description: TEE attestation evidence (base64 encoded)
@@ -586,6 +587,8 @@ paths:
                   type: string
                 nonce:
                   type: string
+                  description: >-
+                    Previously obtained 64-character lowercase hexadecimal nonce. A single surrounding pair of double quotes (as sent by existing tas_agent releases) is removed before validation; the unquoted nonce is used for report-data binding.
                 tee-evidence:
                   type: string
                   format: base64

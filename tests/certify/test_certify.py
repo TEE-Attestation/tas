@@ -194,6 +194,31 @@ def test_certify_nonce_replay_rejected(test_client, monkeypatch):
     assert second.json["error"] == "Invalid or expired nonce"
 
 
+def test_certify_accepts_json_quoted_nonce(test_client, monkeypatch):
+    """A JSON-quoted nonce is unwrapped once and the bare nonce is used for binding."""
+    import tas.certify.routes as cert_routes
+
+    seen = {}
+
+    def mock_domain_verify(redis_client, nonce, *args, **kwargs):
+        seen["nonce"] = nonce
+        return True, "key_id_123", None
+
+    monkeypatch.setattr(cert_routes, "domain_verify", mock_domain_verify)
+
+    nonce = get_nonce(test_client)
+    csr_b64 = base64.b64encode(generate_csr(cn="quoted-nonce.local")).decode("ascii")
+    payload = build_certify_payload(f'"{nonce}"', csr_b64)
+
+    first = _post_certify(test_client, payload)
+    assert first.status_code == 200, first.json
+    assert seen["nonce"] == nonce
+
+    replay = _post_certify(test_client, payload)
+    assert replay.status_code == 403
+    assert replay.json["error"] == "Invalid or expired nonce"
+
+
 def test_certify_expired_nonce_rejected(test_client, monkeypatch):
     import tas.certify.routes as cert_routes
 
@@ -225,6 +250,9 @@ def test_certify_expired_nonce_rejected(test_client, monkeypatch):
         "a" * 63,
         12345,
         ["a" * 64],
+        '""' + "a" * 64 + '""',
+        '"' + "a" * 64,
+        '"' + "A" * 64 + '"',
     ],
 )
 def test_certify_malformed_or_policy_nonce_preserves_redis_keys(
