@@ -26,6 +26,24 @@ def _valid_nonce_format(nonce):
     return isinstance(nonce, str) and NONCE_PATTERN.fullmatch(nonce) is not None
 
 
+def normalize_nonce(nonce):
+    """Strip one surrounding pair of double quotes from a quoted nonce.
+
+    Existing tas_agent releases serialize the nonce with
+    ``serde_json::Value::to_string()``, which keeps the JSON quotes, and
+    post ``"<64 hex>"`` back to TAS. Only that exact shape is unwrapped;
+    anything else is returned unchanged so ``validate_nonce`` still rejects it.
+    """
+    if (
+        isinstance(nonce, str)
+        and len(nonce) == 66
+        and nonce.startswith('"')
+        and nonce.endswith('"')
+    ):
+        return nonce[1:-1]
+    return nonce
+
+
 def _nonce_key(nonce):
     """Derive the namespaced Redis key for a canonical nonce."""
     return f"{NONCE_KEY_PREFIX}{nonce}"

@@ -12,7 +12,13 @@ import logging
 
 import pytest
 
-from tas.nonce import NONCE_KEY_PREFIX, check_redis_version, store_nonce, validate_nonce
+from tas.nonce import (
+    NONCE_KEY_PREFIX,
+    check_redis_version,
+    normalize_nonce,
+    store_nonce,
+    validate_nonce,
+)
 
 
 class FakeRedis:
@@ -362,13 +368,17 @@ class TestNonceRedisRouting:
         "bad_nonce",
         [
             int("1" * 64),
-            f'"{VALID_NONCE}"',
             [VALID_NONCE],
             "policy:sev:test-policy",
+            f'""{VALID_NONCE}""',
+            f'"{VALID_NONCE}',
+            f'{VALID_NONCE}"',
+            f'"{VALID_NONCE.upper()}"',
+            f"'{VALID_NONCE}'",
         ],
     )
-    def test_get_secret_does_not_coerce_non_string_or_quoted_nonce(self, bad_nonce):
-        """get_secret passes the raw JSON nonce value to validate_nonce without coercion."""
+    def test_get_secret_rejects_non_string_or_malformed_quoted_nonce(self, bad_nonce):
+        """get_secret only unwraps one exact quote pair and never coerces other values."""
         app = _make_app(with_ephemeral=False)
         fake = FakeRedis()
         fake.set("policy:sev:test-policy", '{"metadata":{"policy_id":"test-policy"}}')
@@ -397,6 +407,40 @@ class TestNonceRedisRouting:
         )
         assert fake.get(f"{NONCE_KEY_PREFIX}{'1' * 64}") == "1"
         assert fake.get(f"{NONCE_KEY_PREFIX}{VALID_NONCE}") == "1"
+
+    def test_get_secret_accepts_json_quoted_nonce_from_agent(self):
+        """Existing tas_agent releases post the nonce with its JSON quotes intact."""
+        app = _make_app(with_ephemeral=False)
+        app.extensions["kbm_client"] = MagicMock(name="kbm_client")
+        app.extensions["kbm_get_secret"] = MagicMock(return_value="wrapped-secret")
+        fake = FakeRedis()
+        fake.set(f"{NONCE_KEY_PREFIX}{VALID_NONCE}", "1", ex=120)
+        app.extensions["redis"] = fake
+
+        request_body = {
+            "tee-type": "amd-sev-snp",
+            "nonce": f'"{VALID_NONCE}"',
+            "tee-evidence": "evidence",
+            "policy-id": "policy:sev:test-policy",
+            "report-data-binding": True,
+            "wrapping-key": _TEST_WRAPPING_KEY_B64,
+        }
+
+        with (
+            patch("tas.client_routes.authenticate_request", return_value=None),
+            patch(
+                "tas.client_routes.vm_verify", return_value=(True, "key-id", None)
+            ) as vm_verify_mock,
+        ):
+            with app.test_client() as client:
+                first = client.post("/kb/v0/get_secret", json=request_body)
+                replay = client.post("/kb/v0/get_secret", json=request_body)
+
+        assert first.status_code == 200
+        assert vm_verify_mock.call_args.args[1] == VALID_NONCE
+        assert fake.get(f"{NONCE_KEY_PREFIX}{VALID_NONCE}") is None
+        assert replay.status_code == 401
+        assert replay.get_json() == {"error": "Invalid or expired nonce"}
 
 
 class TestNonceAuditLogging:
@@ -453,3 +497,34 @@ class TestNonceAuditLogging:
         assert (is_valid, err) == (False, "Invalid or expired nonce")
         assert "Nonce validation failed: Malformed nonce" in caplog.text
         assert "FORGED_LOG_ENTRY" not in caplog.text
+
+
+class TestNormalizeNonce:
+    """normalize_nonce unwraps exactly one JSON quote pair around a 64-char value."""
+
+    def test_unwraps_single_quote_pair(self):
+        assert normalize_nonce(f'"{VALID_NONCE}"') == VALID_NONCE
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            VALID_NONCE,
+            f'""{VALID_NONCE}""',
+            f'"{VALID_NONCE}',
+            f'{VALID_NONCE}"',
+            '"abc"',
+            '""',
+            f"'{VALID_NONCE}'",
+            None,
+            123,
+            [VALID_NONCE],
+        ],
+    )
+    def test_leaves_other_values_unchanged(self, value):
+        assert normalize_nonce(value) is value
+
+    def test_unwrapped_value_is_still_strictly_validated(self, fake_redis):
+        quoted_upper = f'"{VALID_NONCE.upper()}"'
+        is_valid, err = validate_nonce(fake_redis, normalize_nonce(quoted_upper))
+        assert is_valid is False
+        assert err == "Invalid or expired nonce"

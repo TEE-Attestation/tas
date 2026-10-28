@@ -26,7 +26,7 @@ from flask import Blueprint, Response, current_app, jsonify, request
 
 from ..auth import authenticate_request
 from ..client_routes import get_nonce_redis
-from ..nonce import validate_nonce
+from ..nonce import normalize_nonce, validate_nonce
 from ..policy_helper import validate_key_component
 from ..tas_logging import get_logger
 from ..tas_vm import domain_verify
@@ -179,6 +179,8 @@ def certify() -> tuple[Response, int]:
     if not subject_cn:
         subject_cn = f"tas.{secrets.token_hex(4)}"
 
+    # The unquoted nonce is used for both replay protection and report-data binding.
+    nonce = normalize_nonce(nonce)
     nonce_client = get_nonce_redis()
     is_valid, error_message = validate_nonce(nonce_client, nonce)
     if not is_valid:

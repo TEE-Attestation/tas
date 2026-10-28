@@ -19,7 +19,7 @@ The certificate API is only available when `TAS_CERTIFY_ENABLED` is enabled. If 
 A request must be JSON and must include:
 
 - `tee-type`: TEE type, such as `intel-tdx` or `amd-sev-snp`
-- `nonce`: fresh nonce from GET /alphav1/nonce
+- `nonce`: fresh nonce from GET /alphav1/nonce; one surrounding pair of double quotes is acceptable for compatibility with existing agents
 - `tee-evidence`: base64-encoded TEE attestation evidence
 - `csr`: base64-encoded certificate signing request
 - `domain-policy`: id of the domain-policy the workload is requesting a certificate for
