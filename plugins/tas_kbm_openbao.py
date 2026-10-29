@@ -48,7 +48,7 @@ from tas.tas_logging import get_logger
 # Setup logging for the OpenBao KBM plugin
 logger = get_logger("tas.plugins.tas_kbm_openbao")
 
-# Declare host dependencies (opt-in): currently no extra host kwargs required
+# No additional host-provided dependencies are required.
 KBM_HOST_KWARGS = set()
 
 AES_KEY_LEN = 32  # AES-256
@@ -544,6 +544,14 @@ class OpenBaoResponseError(KBMResponseError):
     pass
 
 
+class _OpenBaoSecretNotFound(ValueError):
+    """Internal signal distinguishing a missing secret from other failures."""
+
+
+class _OpenBaoSecretAlreadyExists(Exception):
+    """Internal signal for a KV v2 create-only write conflict."""
+
+
 class _OpenBaoClient:
     """OpenBao Key Management Backend client using HTTP REST."""
 
@@ -568,12 +576,18 @@ class _OpenBaoClient:
         max_secret_file_bytes: int = 1024,
         approle_mount: str = "approle",
         token_renew_on_401: bool = True,
+        create_key_if_absent: bool = False,
     ):
         url = _require_nonempty_string(url, "url")
         auth_method = _require_nonempty_string(auth_method, "auth_method").lower()
         secret_field = _require_nonempty_string(secret_field, "secret_field")
         if not isinstance(token_renew_on_401, bool):
             raise ValueError("token_renew_on_401 must be a boolean")
+        if not isinstance(create_key_if_absent, bool):
+            raise ValueError("create_key_if_absent must be a boolean")
+        if create_key_if_absent:
+            if kv_version != 2:
+                raise ValueError("create_key_if_absent requires OpenBao KV v2")
         role_id = _normalize_optional_string(role_id, "role_id")
         secret_id = _normalize_optional_string(secret_id, "secret_id")
         secret_id_file = _normalize_optional_string(secret_id_file, "secret_id_file")
@@ -601,6 +615,7 @@ class _OpenBaoClient:
         self.max_secret_file_bytes = max_secret_file_bytes
         self.approle_mount = approle_mount
         self.token_renew_on_401 = token_renew_on_401
+        self.create_key_if_absent = create_key_if_absent
         self._token_generation = 0
         self._reauth_generation = 0
         self._last_reauth_error: Optional[Exception] = None
@@ -820,7 +835,7 @@ class _OpenBaoClient:
         self._token_generation += 1
         return True
 
-    def get_secret(self, key_id: str) -> bytes:
+    def _read_secret(self, key_id: str) -> bytes:
         """
         Retrieve secret bytes for the given key_id from OpenBao via REST API.
 
@@ -837,8 +852,8 @@ class _OpenBaoClient:
         resp = self._make_request("GET", url)
 
         if resp.status_code == 404:
-            logger.error(f"Secret not found in OpenBao: {key_id}")
-            raise ValueError("Secret not found")
+            logger.error("Secret not found in OpenBao")
+            raise _OpenBaoSecretNotFound("Secret not found")
         elif resp.status_code != 200:
             logger.error(
                 f"OpenBao secret retrieval failed ({resp.status_code}) for key_id {key_id}"
@@ -899,13 +914,70 @@ class _OpenBaoClient:
                 f"OpenBao returned a null value for the configured secret field for key_id: {key_id}"
             )
             raise OpenBaoResponseError()
+
         return _secret_to_bytes(val)
+
+    def create_secret(self, key_id: str, secret: str) -> None:
+        """Create a new KV v2 secret without overwriting an existing value."""
+        if (
+            self.kv_version != 2
+        ):  # Secret creation using open bao CAS is only supported for KV v2
+            raise ValueError("Secret creation requires OpenBao KV v2")
+        if not isinstance(secret, str) or not secret:
+            raise ValueError("secret must be a non-empty string")
+
+        url = _build_url(self.url, self.mount_point, self.kv_version, key_id)
+        response = self._make_request(
+            "POST",
+            url,
+            json={
+                "options": {
+                    "cas": 0
+                },  # Using check-and-set to ensure not overwriting an existing secret and protect against concurrent writers
+                "data": {self.secret_field: secret},
+            },
+        )
+        if response.status_code in (429, 500, 502, 503, 504):
+            raise OpenBaoUnavailableError()
+        if response.status_code == 400:
+            try:
+                payload = response.json()
+                errors = payload.get("errors", []) if isinstance(payload, dict) else []
+            except (TypeError, ValueError):
+                errors = []
+            if isinstance(errors, list) and any(
+                isinstance(error, str)
+                and "check-and-set parameter did not match" in error.lower()
+                for error in errors
+            ):
+                raise _OpenBaoSecretAlreadyExists()
+        if response.status_code not in (200, 204):
+            logger.error(f"OpenBao secret creation failed ({response.status_code})")
+            raise OpenBaoResponseError()
+
+    def get_secret(self, key_id: str) -> bytes:
+        """Retrieve a secret, optionally creating it after a missing-key response."""
+        try:
+            return self._read_secret(key_id)
+        except _OpenBaoSecretNotFound:
+            if not self.create_key_if_absent:
+                raise
+
+        secret = _secrets.token_urlsafe(32)
+        try:
+            self.create_secret(key_id, secret)
+        except _OpenBaoSecretAlreadyExists:
+            # A concurrent CAS write won; read and return the stored value.
+            return self._read_secret(key_id)
+        return secret.encode("ascii")
 
 
 # KBM Plugin Interface
 
 
-def kbm_open_client_connection(config_file: Optional[str] = None) -> _OpenBaoClient:
+def kbm_open_client_connection(
+    config_file: Optional[str] = None,
+) -> _OpenBaoClient:
     """
     Initialize and return the OpenBao KBM client handle.
 
@@ -1083,6 +1155,15 @@ def kbm_open_client_connection(config_file: Optional[str] = None) -> _OpenBaoCli
         _parse_bool(raw_renew, "token_renew_on_401") if raw_renew is not None else True
     )
 
+    raw_create_key = os.getenv("BAO_CREATE_KEY_IF_ABSENT")
+    if raw_create_key is None:
+        raw_create_key = cfg.get("BAO_CREATE_KEY_IF_ABSENT")
+    create_key_if_absent = (
+        _parse_bool(raw_create_key, "create_key_if_absent")
+        if raw_create_key is not None
+        else False
+    )
+
     # Load AppRole mount, mount point and secret field from environment var or config
     approle_mount = os.getenv("BAO_APPROLE_MOUNT")
     if approle_mount is None:
@@ -1120,6 +1201,7 @@ def kbm_open_client_connection(config_file: Optional[str] = None) -> _OpenBaoCli
         max_secret_file_bytes=max_secret_file_bytes,
         approle_mount=approle_mount,
         token_renew_on_401=token_renew_on_401,
+        create_key_if_absent=create_key_if_absent,
     )
     return client
 
