@@ -105,6 +105,7 @@ def sev_fetch_certs_from_redis(redis_client: redis.StrictRedis, report):
         - Error messages are logged
     """
     log_function_entry("sev_fetch_certs_from_redis")
+    processor_model = sev.fetch.detect_processor_from_report(report)
 
     # Use the chip_id and reported_tcb to fetch the VCEK from Redis
     # Redis key is structured as "vcek:<chip_id>:<reported_tcb>"
@@ -137,7 +138,7 @@ def sev_fetch_certs_from_redis(redis_client: redis.StrictRedis, report):
         try:
             logger.info("CRL has expired, attempting to refresh and store in Redis")
             new_crl = sev.fetch.request_crl_kds(
-                sev.fetch.ProcType.GENOA, sev.fetch.Endorsement.VCEK
+                processor_model, sev.fetch.Endorsement.VCEK
             )
             _ = redis_client.hset(
                 redis_key_crl,
@@ -691,6 +692,7 @@ def sev_vm_verify(
         return False, "Decoded TEE evidence is empty"
 
     report = sev.AttestationReport.unpack(decoded_evidence)
+    processor_model = sev.fetch.detect_processor_from_report(report)
 
     # Fetch the VCEK and other certificates from Redis
     certs, crl = sev_fetch_certs_from_redis(redis_client, report)
@@ -698,17 +700,13 @@ def sev_vm_verify(
         logger.info("No certificates found in Redis for the provided TEE evidence")
         logger.info("Fetching the certificates from the AMD key server")
 
-        ca_certs = sev.fetch.request_ca_kds(
-            sev.fetch.ProcType.GENOA, sev.fetch.Endorsement.VCEK
-        )
+        ca_certs = sev.fetch.request_ca_kds(processor_model, sev.fetch.Endorsement.VCEK)
         ark = ca_certs[1]
         ask = ca_certs[0]
 
-        vcek = sev.fetch.request_vcek_kds(sev.fetch.ProcType.GENOA, report=report)
+        vcek = sev.fetch.request_vcek_kds(processor_model, report=report)
 
-        crl = sev.fetch.request_crl_kds(
-            sev.fetch.ProcType.GENOA, sev.fetch.Endorsement.VCEK
-        )
+        crl = sev.fetch.request_crl_kds(processor_model, sev.fetch.Endorsement.VCEK)
 
         # Save the fetched VCEK to Redis for future use
         # Don't return an error if the save fails so that verfication can continue
