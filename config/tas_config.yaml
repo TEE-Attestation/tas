@@ -29,6 +29,10 @@ SERVER_PORT: 5000
 #TAS_REDIS_HOST: "localhost"
 #TAS_REDIS_PORT: 6379
 
+# Policy storage backend (`redis` or `postgresql`)
+#TAS_POLICY_BACKEND: "redis"
+#TAS_POSTGRES_DSN: "postgresql://tas@localhost:5432/tas"
+
 # KBM plugin discovery and config
 #TAS_PLUGIN_PREFIX: "tas_kbm"
 #TAS_KBM_CONFIG_FILE: "./config/thales_ctm/thales_ctm.yaml"

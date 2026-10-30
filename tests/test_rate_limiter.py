@@ -86,7 +86,11 @@ class TestManagementRouteUnlimited:
 
         mock_redis = MagicMock()
         mock_redis.keys.return_value = []
+        mock_redis.scan_iter.return_value = []
         app.extensions["redis"] = mock_redis
+        from tas.policy_store import RedisPolicyStore
+
+        app.extensions["policy_store"] = RedisPolicyStore(mock_redis)
 
         mgmt_headers = {"X-MANAGEMENT-API-KEY": "m" * 64}
         with app.test_client() as client:

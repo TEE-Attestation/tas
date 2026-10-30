@@ -7,7 +7,7 @@
 # This file is part of the TEE Attestation Service.
 #
 # This module provides the client API blueprint for attestation operations.
-# Routes: /kb/v0/get_nonce, /kb/v0/get_secret, /version
+# Routes: /alphav1/nonce, /kb/v0/get_nonce, /kb/v0/get_secret, /version
 #
 
 import base64
@@ -32,6 +32,11 @@ def get_redis():
     return current_app.extensions["redis"]
 
 
+def get_policy_store():
+    """Retrieve the configured policy store from the application extensions."""
+    return current_app.extensions["policy_store"]
+
+
 def get_nonce_redis():
     """Retrieve the Redis client for nonce operations.
 
@@ -42,8 +47,8 @@ def get_nonce_redis():
     )
 
 
-# Nonce route  for experiemtal cerftificate flow, make it cler that is not for production use
-# Currently using get_nonce but that may change in the future.
+# /alphav1/nonce serves the experimental certificate flow and is not for
+# production use. /kb/v0/get_nonce serves the secret-release flow.
 @client_bp.route("/alphav1/nonce", methods=["GET"])
 @client_bp.route("/kb/v0/get_nonce", methods=["GET"])
 def get_nonce():
@@ -175,11 +180,13 @@ def get_secret():
             400,
         )
 
-    # Call vm_verify to validate the parameters — always uses primary Redis
-    # for policy lookup, cert caching, and collateral caching
+    # Call `vm_verify` to validate the parameters — uses the configured policy
+    # store for policy lookup and primary Redis for cert and collateral caching
+    policy_store = get_policy_store()
     redis_client = get_redis()
     logger.info(f"Starting TEE verification for type: {tee_type}")
     is_verified, key_id, verify_error = vm_verify(
+        policy_store,
         redis_client,
         nonce,
         tee_type,

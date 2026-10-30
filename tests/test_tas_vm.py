@@ -117,33 +117,42 @@ class TestVmVerifyInputValidation:
 
     def test_empty_nonce_rejected(self):
         ok, _, err = vm_verify(
-            MagicMock(), "", "amd-sev-snp", self.VALID_EVIDENCE_B64, "k1"
+            MagicMock(), MagicMock(), "", "amd-sev-snp", self.VALID_EVIDENCE_B64, "k1"
         )
         assert ok is False
         assert "Nonce" in err
 
     def test_none_nonce_rejected(self):
         ok, _, err = vm_verify(
-            MagicMock(), None, "amd-sev-snp", self.VALID_EVIDENCE_B64, "k1"
+            MagicMock(), MagicMock(), None, "amd-sev-snp", self.VALID_EVIDENCE_B64, "k1"
         )
         assert ok is False
         assert "Nonce" in err
 
     def test_invalid_tee_type_rejected(self):
         ok, _, err = vm_verify(
-            MagicMock(), "abc123", "bad-type", self.VALID_EVIDENCE_B64, "k1"
+            MagicMock(),
+            MagicMock(),
+            "abc123",
+            "bad-type",
+            self.VALID_EVIDENCE_B64,
+            "k1",
         )
         assert ok is False
         assert "TEE type" in err
 
     def test_invalid_base64_evidence_rejected(self):
-        ok, _, err = vm_verify(MagicMock(), "abc123", "amd-sev-snp", "!!!bad!!!", "k1")
+        ok, _, err = vm_verify(
+            MagicMock(), MagicMock(), "abc123", "amd-sev-snp", "!!!bad!!!", "k1"
+        )
         assert ok is False
         assert "invalid" in err.lower()
 
     def test_empty_evidence_rejected(self):
         empty_b64 = base64.b64encode(b"").decode()
-        ok, _, err = vm_verify(MagicMock(), "abc123", "amd-sev-snp", empty_b64, "k1")
+        ok, _, err = vm_verify(
+            MagicMock(), MagicMock(), "abc123", "amd-sev-snp", empty_b64, "k1"
+        )
         assert ok is False
         assert "empty" in err.lower()
 
@@ -152,7 +161,7 @@ class TestVmVerifyInputValidation:
 
 
 @patch(
-    "tas.tas_vm.get_policy_from_redis",
+    "tas.tas_vm.get_policy",
     return_value=(_MOCK_POLICY, "test-key"),
 )
 class TestVmVerifyReportDataBinding:
@@ -169,6 +178,7 @@ class TestVmVerifyReportDataBinding:
         mock_sev.return_value = (True, None)
 
         vm_verify(
+            MagicMock(),
             MagicMock(),
             self.NONCE,
             "amd-sev-snp",
@@ -191,6 +201,7 @@ class TestVmVerifyReportDataBinding:
 
         vm_verify(
             MagicMock(),
+            MagicMock(),
             self.NONCE,
             "amd-sev-snp",
             self.TEE_EVIDENCE_B64,
@@ -206,6 +217,7 @@ class TestVmVerifyReportDataBinding:
         mock_sev.return_value = (True, None)
 
         vm_verify(
+            MagicMock(),
             MagicMock(),
             self.NONCE,
             "amd-sev-snp",
@@ -225,6 +237,7 @@ class TestVmVerifyReportDataBinding:
 
         vm_verify(
             MagicMock(),
+            MagicMock(),
             self.NONCE,
             "amd-sev-snp",
             self.TEE_EVIDENCE_B64,
@@ -242,6 +255,7 @@ class TestVmVerifyReportDataBinding:
         mock_tdx.return_value = (True, None)
 
         vm_verify(
+            MagicMock(),
             MagicMock(),
             self.NONCE,
             "intel-tdx",
@@ -262,7 +276,7 @@ class TestVmVerifyReportDataBinding:
 
 
 @patch(
-    "tas.tas_vm.get_policy_from_redis",
+    "tas.tas_vm.get_policy",
     return_value=(_MOCK_POLICY, "prop-key"),
 )
 class TestVmVerifyReturnPropagation:
@@ -277,7 +291,12 @@ class TestVmVerifyReturnPropagation:
         """vm_verify should return (True, key_id, None) when sev_vm_verify succeeds."""
         mock_sev.return_value = (True, None)
         ok, key_id, err = vm_verify(
-            MagicMock(), self.NONCE, "amd-sev-snp", self.TEE_EVIDENCE_B64, self.KEY_ID
+            MagicMock(),
+            MagicMock(),
+            self.NONCE,
+            "amd-sev-snp",
+            self.TEE_EVIDENCE_B64,
+            self.KEY_ID,
         )
         assert ok is True
         assert key_id == "prop-key"
@@ -288,7 +307,12 @@ class TestVmVerifyReturnPropagation:
         """vm_verify should return (False, None, error) when sev_vm_verify fails."""
         mock_sev.return_value = (False, "SEV verification failed")
         ok, key_id, err = vm_verify(
-            MagicMock(), self.NONCE, "amd-sev-snp", self.TEE_EVIDENCE_B64, self.KEY_ID
+            MagicMock(),
+            MagicMock(),
+            self.NONCE,
+            "amd-sev-snp",
+            self.TEE_EVIDENCE_B64,
+            self.KEY_ID,
         )
         assert ok is False
         assert key_id is None
@@ -299,7 +323,12 @@ class TestVmVerifyReturnPropagation:
         """vm_verify should return (True, key_id, None) when tdx_vm_verify succeeds."""
         mock_tdx.return_value = (True, None)
         ok, key_id, err = vm_verify(
-            MagicMock(), self.NONCE, "intel-tdx", self.TEE_EVIDENCE_B64, self.KEY_ID
+            MagicMock(),
+            MagicMock(),
+            self.NONCE,
+            "intel-tdx",
+            self.TEE_EVIDENCE_B64,
+            self.KEY_ID,
         )
         assert ok is True
         assert key_id == "prop-key"
@@ -310,7 +339,12 @@ class TestVmVerifyReturnPropagation:
         """vm_verify should return (False, None, error) when tdx_vm_verify fails."""
         mock_tdx.return_value = (False, "TDX verification failed")
         ok, key_id, err = vm_verify(
-            MagicMock(), self.NONCE, "intel-tdx", self.TEE_EVIDENCE_B64, self.KEY_ID
+            MagicMock(),
+            MagicMock(),
+            self.NONCE,
+            "intel-tdx",
+            self.TEE_EVIDENCE_B64,
+            self.KEY_ID,
         )
         assert ok is False
         assert key_id is None
@@ -321,7 +355,7 @@ class TestVmVerifyReturnPropagation:
 
 
 @patch(
-    "tas.tas_vm.get_policy_from_redis",
+    "tas.tas_vm.get_policy",
     return_value=(_MOCK_POLICY, "gpu-key"),
 )
 class TestVmVerifyGpuEvidence:
@@ -356,6 +390,7 @@ class TestVmVerifyGpuEvidence:
         ]
         ok, _, err = vm_verify(
             MagicMock(),
+            MagicMock(),
             self.NONCE,
             "amd-sev-snp",
             self.TEE_EVIDENCE_B64,
@@ -379,6 +414,7 @@ class TestVmVerifyGpuEvidence:
         ]
         ok, _, err = vm_verify(
             MagicMock(),
+            MagicMock(),
             self.NONCE,
             "amd-sev-snp",
             self.TEE_EVIDENCE_B64,
@@ -401,6 +437,7 @@ class TestVmVerifyGpuEvidence:
             },
         ]
         ok, _, err = vm_verify(
+            MagicMock(),
             MagicMock(),
             self.NONCE,
             "amd-sev-snp",
@@ -435,6 +472,7 @@ class TestVmVerifyGpuEvidence:
         ]
 
         vm_verify(
+            MagicMock(),
             MagicMock(),
             self.NONCE,
             "amd-sev-snp",
@@ -482,6 +520,7 @@ class TestVmVerifyGpuEvidence:
 
         vm_verify(
             MagicMock(),
+            MagicMock(),
             self.NONCE,
             "amd-sev-snp",
             self.TEE_EVIDENCE_B64,
@@ -513,6 +552,7 @@ class TestVmVerifyGpuEvidence:
 
             vm_verify(
                 MagicMock(),
+                MagicMock(),
                 self.NONCE,
                 "amd-sev-snp",
                 self.TEE_EVIDENCE_B64,
@@ -533,6 +573,7 @@ class TestVmVerifyGpuEvidence:
         mock_sev.return_value = (True, None)
 
         vm_verify(
+            MagicMock(),
             MagicMock(),
             self.NONCE,
             "amd-sev-snp",
@@ -577,6 +618,7 @@ class TestVmVerifyGpuEvidence:
         ]
 
         ok, _, err = vm_verify(
+            MagicMock(),
             MagicMock(),
             self.NONCE,
             "amd-sev-snp",
@@ -828,7 +870,7 @@ class TestGpuEvidenceListValidation:
 
     # -- wiring into verify() / vm_verify() --------------------------------
 
-    @patch("tas.tas_vm.get_policy_from_redis", return_value=(_MOCK_POLICY, "k"))
+    @patch("tas.tas_vm.get_policy", return_value=(_MOCK_POLICY, "k"))
     @patch("tas.tas_vm.gpu_vm_verify")
     @patch("tas.tas_vm.sev_vm_verify")
     def test_vm_verify_rejects_malformed_gpu_list(
@@ -844,6 +886,7 @@ class TestGpuEvidenceListValidation:
         ]:
             ok, key_id, err = vm_verify(
                 MagicMock(),
+                MagicMock(),
                 self.NONCE,
                 "amd-sev-snp",
                 self.TEE_EVIDENCE_B64,
@@ -858,7 +901,7 @@ class TestGpuEvidenceListValidation:
         mock_gpu.assert_not_called()
         mock_sev.assert_not_called()
 
-    @patch("tas.tas_vm.get_policy_from_redis", return_value=(_MOCK_POLICY, "k"))
+    @patch("tas.tas_vm.get_policy", return_value=(_MOCK_POLICY, "k"))
     @patch("tas.tas_vm.gpu_vm_verify")
     @patch("tas.tas_vm.sev_vm_verify")
     def test_vm_verify_rejects_malformed_gpu_list_even_without_binding(
@@ -866,6 +909,7 @@ class TestGpuEvidenceListValidation:
     ):
         """Shape validation applies regardless of report_data_binding."""
         ok, _, err = vm_verify(
+            MagicMock(),
             MagicMock(),
             self.NONCE,
             "amd-sev-snp",
@@ -879,7 +923,7 @@ class TestGpuEvidenceListValidation:
         assert err == "GPU evidence must be a list"
         mock_sev.assert_not_called()
 
-    @patch("tas.tas_vm.get_policy_from_redis", return_value=(_MOCK_POLICY, "k"))
+    @patch("tas.tas_vm.get_policy", return_value=(_MOCK_POLICY, "k"))
     @patch("tas.tas_vm.gpu_vm_verify")
     @patch("tas.tas_vm.sev_vm_verify")
     def test_vm_verify_gpu_list_none_still_means_no_gpus(
@@ -887,6 +931,7 @@ class TestGpuEvidenceListValidation:
     ):
         mock_sev.return_value = (True, None)
         ok, _, err = vm_verify(
+            MagicMock(),
             MagicMock(),
             self.NONCE,
             "amd-sev-snp",
@@ -951,12 +996,13 @@ class TestVmVerifyGpuPolicy:
         return base64.b64encode(envelope.encode()).decode()
 
     @patch(
-        "tas.tas_vm.get_policy_from_redis",
+        "tas.tas_vm.get_policy",
         return_value=(_POLICY_WITH_GPU, "gpu-test-key"),
     )
     def test_gpu_required_by_policy_but_no_evidence_fails(self, _mock_policy):
         """If policy has components.gpu but no GPU evidence provided, fail."""
         ok, _, err = vm_verify(
+            MagicMock(),
             MagicMock(),
             self.NONCE,
             "amd-sev-snp",
@@ -970,7 +1016,7 @@ class TestVmVerifyGpuPolicy:
         assert "requires GPU attestation" in err
 
     @patch(
-        "tas.tas_vm.get_policy_from_redis",
+        "tas.tas_vm.get_policy",
         return_value=(_POLICY_NO_COMPONENTS, "no-gpu-key"),
     )
     @patch("tas.tas_vm.sev_vm_verify")
@@ -989,6 +1035,7 @@ class TestVmVerifyGpuPolicy:
         with patch("tas.tas_vm.gpu_vm_verify", return_value=(True, None, None)):
             ok, key_id, err = vm_verify(
                 MagicMock(),
+                MagicMock(),
                 self.NONCE,
                 "amd-sev-snp",
                 self.TEE_EVIDENCE_B64,
@@ -1001,7 +1048,7 @@ class TestVmVerifyGpuPolicy:
         assert err is None
 
     @patch(
-        "tas.tas_vm.get_policy_from_redis",
+        "tas.tas_vm.get_policy",
         return_value=(_POLICY_WITH_GPU, "gpu-test-key"),
     )
     @patch("tas.tas_vm.gpu_validate_claims", return_value=(True, None))
@@ -1023,6 +1070,7 @@ class TestVmVerifyGpuPolicy:
 
         vm_verify(
             MagicMock(),
+            MagicMock(),
             self.NONCE,
             "amd-sev-snp",
             self.TEE_EVIDENCE_B64,
@@ -1038,7 +1086,7 @@ class TestVmVerifyGpuPolicy:
         assert mock_validate.call_args.args[0] == _NVIDIA_GPU_POLICY
 
     @patch(
-        "tas.tas_vm.get_policy_from_redis",
+        "tas.tas_vm.get_policy",
         return_value=(_POLICY_WITH_GPU, "gpu-test-key"),
     )
     @patch("tas.tas_vm.gpu_validate_claims", return_value=(True, None))
@@ -1067,6 +1115,7 @@ class TestVmVerifyGpuPolicy:
 
             ok, key_id, err = vm_verify(
                 MagicMock(),
+                MagicMock(),
                 self.NONCE,
                 "amd-sev-snp",
                 self.TEE_EVIDENCE_B64,
@@ -1084,7 +1133,7 @@ class TestVmVerifyGpuPolicy:
             mock_sev.assert_not_called()
 
     @patch(
-        "tas.tas_vm.get_policy_from_redis",
+        "tas.tas_vm.get_policy",
         return_value=(_POLICY_WITH_GPU, "gpu-test-key"),
     )
     @patch("tas.tas_vm.gpu_validate_claims", return_value=(True, None))
@@ -1102,6 +1151,7 @@ class TestVmVerifyGpuPolicy:
 
         ok, _, err = vm_verify(
             MagicMock(),
+            MagicMock(),
             self.NONCE,
             "amd-sev-snp",
             self.TEE_EVIDENCE_B64,
@@ -1117,7 +1167,7 @@ class TestVmVerifyGpuPolicy:
         mock_validate.assert_not_called()
 
     @patch(
-        "tas.tas_vm.get_policy_from_redis",
+        "tas.tas_vm.get_policy",
         return_value=(_POLICY_WITH_GPU, "gpu-test-key"),
     )
     @patch("tas.tas_vm.gpu_validate_claims", return_value=(True, None))
@@ -1143,6 +1193,7 @@ class TestVmVerifyGpuPolicy:
         ]
 
         ok, _, err = vm_verify(
+            MagicMock(),
             MagicMock(),
             self.NONCE,
             "amd-sev-snp",
@@ -1314,10 +1365,11 @@ class TestVmVerifyGpuPolicy:
                 "validation_rules": {},
                 **components,
             }
-            with patch("tas.tas_vm.get_policy_from_redis", return_value=(policy, "k")):
+            with patch("tas.tas_vm.get_policy", return_value=(policy, "k")):
                 # With and without GPU evidence: a malformed policy never passes.
                 for gpu_list in (gpu_evidence, None):
                     ok, key_id, err = vm_verify(
+                        MagicMock(),
                         MagicMock(),
                         self.NONCE,
                         "amd-sev-snp",
@@ -1348,8 +1400,9 @@ class TestVmVerifyGpuPolicy:
                 "validation_rules": {},
                 **components,
             }
-            with patch("tas.tas_vm.get_policy_from_redis", return_value=(policy, "k")):
+            with patch("tas.tas_vm.get_policy", return_value=(policy, "k")):
                 ok, key_id, err = vm_verify(
+                    MagicMock(),
                     MagicMock(),
                     self.NONCE,
                     "amd-sev-snp",
@@ -1393,7 +1446,7 @@ def test_required_gpu_checks_independent_of_binding(
     cpu_result = (False, "CPU policy rejected") if failure == "cpu" else (True, None)
     with (
         patch(
-            "tas.tas_vm.get_policy_from_redis",
+            "tas.tas_vm.get_policy",
             return_value=(_POLICY_WITH_GPU, "gpu-test-key"),
         ),
         patch("tas.tas_vm.gpu_vm_verify", return_value=gpu_result) as gpu,
@@ -1402,6 +1455,7 @@ def test_required_gpu_checks_independent_of_binding(
         patch("tas.tas_vm.tdx_vm_verify", return_value=cpu_result) as tdx,
     ):
         ok, key_id, error = vm_verify(
+            MagicMock(),
             MagicMock(),
             "nonce",
             tee_type,

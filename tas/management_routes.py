@@ -11,6 +11,7 @@
 #
 
 import json
+from contextlib import closing
 
 from flask import Blueprint, current_app, jsonify, request
 
@@ -21,6 +22,7 @@ from .policy_helper import (
     validate_policy_key,
     validate_policy_metadata,
 )
+from .policy_store import POLICY_NAMESPACE, PolicyAlreadyExists
 from .tas_logging import get_logger
 
 logger = get_logger(__name__)
@@ -33,9 +35,14 @@ def _get_redis():
     return current_app.extensions["redis"]
 
 
+def _get_policy_store():
+    """Retrieve the configured policy store from the application extensions."""
+    return current_app.extensions["policy_store"]
+
+
 @management_bp.route("/policy/v0/store", methods=["POST"])
 def store_policy():
-    """Store a security policy in Redis for later use in attestation validation."""
+    """Store a security policy for later use in attestation validation."""
     logger.info(f"Received policy store request from {request.remote_addr}")
     auth_response = authenticate_management_request()
     if auth_response:
@@ -66,18 +73,13 @@ def store_policy():
         logger.error(f"Policy signature check failed: {error}")
         return jsonify({"error": error}), 400
 
+    policy_key = f"{POLICY_NAMESPACE}:{policy_id}"
     try:
-        redis_client = _get_redis()
-        policy_key = f"policy:{policy_id}"
-
-        if redis_client.get(policy_key) is not None:
-            logger.error(f"Policy '{policy_key}' already exists in Redis")
-            return jsonify({"error": f"Policy '{policy_key}' already exists"}), 409
-
+        policy_store = _get_policy_store()
         policy_json = json.dumps(policy)
-        redis_client.set(policy_key, policy_json)
+        policy_store.create(POLICY_NAMESPACE, policy_id, policy_json)
 
-        logger.info(f"Stored policy '{policy_key}' in Redis")
+        logger.info(f"Stored policy '{policy_key}'")
 
         response_data = {"message": f"Policy '{policy_key}' stored successfully"}
         if warning_message:
@@ -85,14 +87,17 @@ def store_policy():
 
         return jsonify(response_data), 201
 
+    except PolicyAlreadyExists:
+        logger.error(f"Policy '{policy_key}' already exists")
+        return jsonify({"error": f"Policy '{policy_key}' already exists"}), 409
     except Exception as e:
         logger.error(f"Error storing policy: {e}")
-        return jsonify({"error": "Failed to store policy in Redis"}), 500
+        return jsonify({"error": "Failed to store policy"}), 500
 
 
 @management_bp.route("/policy/v0/get/<policy_id>", methods=["GET"])
 def get_policy(policy_id):
-    """Retrieve a security policy from Redis."""
+    """Retrieve a security policy from the configured policy store."""
     logger.info(
         f"Received policy get request for '{policy_id}' from {request.remote_addr}"
     )
@@ -100,19 +105,19 @@ def get_policy(policy_id):
     if auth_response:
         return auth_response
 
-    policy_key = f"policy:{policy_id}"
+    policy_key = f"{POLICY_NAMESPACE}:{policy_id}"
     is_valid, error_message = validate_policy_key(policy_key)
     if not is_valid:
         logger.error(f"Invalid policy key '{policy_key}': {error_message}")
         return jsonify({"error": error_message}), 400
 
     try:
-        redis_client = _get_redis()
-        logger.debug(f"Retrieving policy '{policy_key}' from Redis")
-        policy_json = redis_client.get(policy_key)
+        policy_store = _get_policy_store()
+        logger.debug(f"Retrieving policy '{policy_key}'")
+        policy_json = policy_store.get(POLICY_NAMESPACE, policy_id)
 
         if not policy_json:
-            logger.warning(f"Policy '{policy_key}' not found in Redis")
+            logger.warning(f"Policy '{policy_key}' not found")
             return jsonify({"error": f"Policy '{policy_key}' not found"}), 404
 
         policy = json.loads(policy_json)
@@ -129,48 +134,47 @@ def get_policy(policy_id):
 
     except json.JSONDecodeError as e:
         logger.error(f"Error parsing policy JSON: {e}")
-        return jsonify({"error": "Invalid policy data in Redis"}), 500
+        return jsonify({"error": "Invalid policy data in policy store"}), 500
     except Exception as e:
         logger.error(f"Error retrieving policy: {e}")
-        return jsonify({"error": "Failed to retrieve policy from Redis"}), 500
+        return jsonify({"error": "Failed to retrieve policy"}), 500
 
 
 @management_bp.route("/policy/v0/list", methods=["GET"])
 def list_policies():
-    """List all stored policies in Redis."""
+    """List all stored policies in the configured policy store."""
     logger.info(f"Received policy list request from {request.remote_addr}")
     auth_response = authenticate_management_request()
     if auth_response:
         return auth_response
 
     try:
-        redis_client = _get_redis()
-        logger.debug("Retrieving all policy keys from Redis")
-        policy_keys = redis_client.keys("policy:*")
-        logger.debug(f"Found {len(policy_keys)} policy keys in Redis")
-
+        policy_store = _get_policy_store()
+        logger.debug("Retrieving all policies from policy store")
         policies = []
-        for key in policy_keys:
-            policy_json = redis_client.get(key)
-
-            if policy_json:
-                try:
-                    policy = json.loads(policy_json)
-                    metadata = policy.get("metadata", {})
-                    policy_info = {
-                        "policy_id": metadata.get("policy_id", "Unknown"),
-                        "name": metadata.get("name", "Unknown"),
-                        "policy_type": metadata.get("policy_type", "Unknown"),
-                        "key_id": metadata.get("key_id", "Unknown"),
-                        "version": metadata.get("version", "Unknown"),
-                        "description": metadata.get("description", "No description"),
-                        "signed": is_policy_signed(policy),
-                    }
-                    policies.append(policy_info)
-                    logger.debug(f"Added policy to list: {key}")
-                except json.JSONDecodeError:
-                    logger.warning(f"Skipping invalid policy with key: {key}")
-                    continue
+        with closing(policy_store.list(POLICY_NAMESPACE)) as policy_documents:
+            for policy_json in policy_documents:
+                if policy_json:
+                    try:
+                        policy = json.loads(policy_json)
+                        metadata = policy.get("metadata", {})
+                        policy_info = {
+                            "policy_id": metadata.get("policy_id", "Unknown"),
+                            "name": metadata.get("name", "Unknown"),
+                            "policy_type": metadata.get("policy_type", "Unknown"),
+                            "key_id": metadata.get("key_id", "Unknown"),
+                            "version": metadata.get("version", "Unknown"),
+                            "description": metadata.get(
+                                "description", "No description"
+                            ),
+                            "signed": is_policy_signed(policy),
+                        }
+                        policies.append(policy_info)
+                    except json.JSONDecodeError:
+                        logger.warning(
+                            "Skipping invalid policy document in policy store"
+                        )
+                        continue
 
         logger.info(f"Successfully listed {len(policies)} policies")
         return jsonify({"policies": policies, "count": len(policies)}), 200
@@ -182,7 +186,7 @@ def list_policies():
 
 @management_bp.route("/policy/v0/delete/<policy_id>", methods=["DELETE"])
 def delete_policy(policy_id):
-    """Delete a security policy from Redis."""
+    """Delete a security policy from the configured policy store."""
     logger.info(
         f"Received policy delete request for '{policy_id}' from {request.remote_addr}"
     )
@@ -190,28 +194,28 @@ def delete_policy(policy_id):
     if auth_response:
         return auth_response
 
-    policy_key = f"policy:{policy_id}"
+    policy_key = f"{POLICY_NAMESPACE}:{policy_id}"
     is_valid, error_message = validate_policy_key(policy_key)
     if not is_valid:
         logger.error(f"Invalid policy key '{policy_key}': {error_message}")
         return jsonify({"error": error_message}), 400
 
     try:
-        redis_client = _get_redis()
+        policy_store = _get_policy_store()
         logger.debug(f"Attempting to delete policy with key: {policy_key}")
-        deleted_count = redis_client.delete(policy_key)
+        deleted = policy_store.delete(POLICY_NAMESPACE, policy_id)
 
-        if deleted_count == 0:
+        if not deleted:
             logger.warning(f"Policy '{policy_key}' not found for deletion")
             return jsonify({"error": f"Policy '{policy_key}' not found"}), 404
 
-        logger.info(f"Deleted policy '{policy_key}' from Redis")
+        logger.info(f"Deleted policy '{policy_key}'")
 
         return jsonify({"message": f"Policy '{policy_key}' deleted successfully"}), 200
 
     except Exception as e:
         logger.error(f"Error deleting policy: {e}")
-        return jsonify({"error": "Failed to delete policy from Redis"}), 500
+        return jsonify({"error": "Failed to delete policy"}), 500
 
 
 @management_bp.route("/status", methods=["GET"])
@@ -230,9 +234,20 @@ def status():
 
     config_rewrite_ok = current_app.extensions.get("redis_config_rewrite_ok")
 
+    policy_store = current_app.extensions.get("policy_store")
+    backend_name = (
+        policy_store.backend_name
+        if policy_store is not None and getattr(policy_store, "backend_name", "")
+        else current_app.config.get("TAS_POLICY_BACKEND", "redis")
+    )
+    reachable = bool(policy_store.is_reachable()) if policy_store is not None else False
     return jsonify(
         {
             "redis_persistence_active": persistence_active,
             "config_rewrite_succeeded": config_rewrite_ok,
+            "policy_storage": {
+                "backend": backend_name,
+                "reachable": reachable,
+            },
         }
     )

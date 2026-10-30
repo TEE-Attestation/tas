@@ -21,7 +21,7 @@ TAS policies define the security requirements that TEE attestation evidence must
 - **Validation Rules**: Specific attestation requirements (measurements, versions, etc.)
 - **Digital Signature**: Optional but recommended for integrity verification
 
-Policies are stored in Redis and referenced during attestation validation to determine if TEE evidence meets the required security standards.
+TAS keeps policies in the policy store that `TAS_POLICY_BACKEND` selects: Redis by default, or PostgreSQL. During attestation, TAS reads the policy to find out if the TEE evidence meets the security requirements.
 
 ## Policy Structure
 
@@ -396,7 +396,7 @@ The request body is the complete signed policy from Step 2 above:
 
 **How it works:** When a client requests a secret, TAS uses the `policy_id` to look up the policy and validates the attestation evidence. On success, the `key_id` from the policy metadata identifies which secret to release from the key manager. The `key_id` must exist in the key manager that TAS KBM is connected to.
 
-**Policy Storage Format:** The policy will be stored in Redis using the key format: `policy:{policy_id}`
+**Policy Storage Format:** In Redis, TAS stores the policy under the key `policy:{policy_id}`. In PostgreSQL, it is a row in the `tas_policies` table with `namespace = 'policy'` and `policy_id = '{policy_id}'`.
 
 Example: `policy:my-sev-policy-001`
 

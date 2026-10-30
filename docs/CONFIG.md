@@ -128,8 +128,12 @@ Stored in Flask's config; set directly via env without prefix:
 | TAS_REDIS_HOST | str | `"localhost"` | No | Hostname or IP address of the Redis server (>= 6.2) used for nonce storage, certificate caching, and policy storage. TAS validates the server version at startup and refuses to start if Redis is older than 6.2. |
 | TAS_REDIS_PORT | int | `6379` | No | Port number of the Redis server. |
 | TAS_REDIS_PASSWORD | str | `""` | No | Redis AUTH password. When set, TAS authenticates to Redis on connection. Always set via environment variable, never in config files. |
-| TAS_REDIS_PERSISTENCE | bool | `true` | No | When `true`, TAS configures Redis AOF + RDB persistence at startup via `CONFIG SET`. Set to `false` if your Redis is externally managed or you want to use your own `redis.conf` settings. Check `GET /management/status` for runtime persistence state. See [REDIS_PERSISTENCE.md](REDIS_PERSISTENCE.md) for details. |
-| TAS_EPHEMERAL_REDIS_URI | str | `""` | No | Redis URI for an optional ephemeral Redis instance. When set, nonces and rate-limit counters are stored here instead of the primary Redis. Policies always remain on the primary. TAS validates connectivity and Redis version (>= 6.2) at startup. Treated as sensitive — masked in logs. |
+| TAS_REDIS_PERSISTENCE | bool | `true` | No | When `true`, TAS configures Redis AOF + RDB persistence at startup via `CONFIG SET`. Set to `false` if your Redis is externally managed or you want to use your own `redis.conf` settings. Check `GET /management/status` for runtime persistence state. See [STORAGE_OPERATIONS.md](STORAGE_OPERATIONS.md) for details. |
+| TAS_POLICY_BACKEND | str | `"redis"` | No | Storage backend for all policy namespaces (`policy`, `certify-policy`, and `domain-policy`). Accepts `"redis"` or `"postgresql"`. Nonces, rate limits, collateral caches, and plugin locks always use Redis. |
+| TAS_POSTGRES_DSN | str | `""` | Conditional | PostgreSQL connection string (for example, `postgresql://tas@localhost:5432/tas`). Required when `TAS_POLICY_BACKEND="postgresql"`. Treated as sensitive and masked in logs. |
+| TAS_POSTGRES_CONNECT_TIMEOUT_SECONDS | int | `5` | No | Positive number of seconds TAS waits when opening a PostgreSQL connection. An explicit `connect_timeout` in `TAS_POSTGRES_DSN` takes precedence. |
+| TAS_POSTGRES_STATEMENT_TIMEOUT_SECONDS | int | `5` | No | Positive statement timeout in seconds for PostgreSQL policy operations. A `statement_timeout` set through the DSN `options` parameter (for example, `options='-c statement_timeout=10s'`) takes precedence. |
+| TAS_EPHEMERAL_REDIS_URI | str | `""` | No | Redis URI for an optional ephemeral Redis instance. When set, nonces and rate-limit counters are stored here instead of the primary Redis. Policies always remain on the configured policy backend. TAS validates connectivity and Redis version (>= 6.2) at startup. Treated as sensitive — masked in logs. |
 | TAS_EPHEMERAL_REDIS_PASSWORD | str | `""` | No | Optional AUTH password for the ephemeral Redis instance. Use this when you do not want to embed credentials in `TAS_EPHEMERAL_REDIS_URI`. Treated as sensitive — masked in logs. |
 | TAS_PLUGIN_PREFIX | str | `"tas_kbm"` | No | Module name prefix used to discover KBM (Key Broker Module) plugins at startup. Only modules whose name starts with this prefix are loaded. |
 | TAS_KBM_PLUGIN | str | `"tas_kbm_mock"` | No | Exact module name of the KBM plugin to activate. Must match one of the discovered plugins. Controls which key broker backend TAS uses (e.g., mock, KMIP, KMIP-JSON). |
@@ -300,26 +304,27 @@ export TAS_MANAGEMENT_API_KEY='...(>=64 chars)...'
 
 ## Management status endpoint
 
-`GET /management/status` returns the runtime Redis persistence state. Requires
-the `X-MANAGEMENT-API-KEY` header.
+`GET /management/status` returns the runtime Redis persistence state and policy
+storage status. Requires the `X-MANAGEMENT-API-KEY` header.
 
 ```json
 {
   "redis_persistence_active": true,
-  "config_rewrite_succeeded": true
+  "config_rewrite_succeeded": true,
+  "policy_storage": {
+    "backend": "postgresql",
+    "reachable": true
+  }
 }
 ```
 
 | Field | Type | Values | Meaning |
 |-------|------|--------|---------|
-| `redis_persistence_active` | bool \| string | `true` | AOF + RDB persistence is currently enabled in Redis |
-| | | `false` | Persistence is not enabled |
-| | | `"unknown"` | Could not query Redis (connection issue) |
-| `config_rewrite_succeeded` | bool \| null | `true` | CONFIG REWRITE succeeded — settings survive Redis restart |
-| | | `false` | CONFIG REWRITE failed — settings active but not persisted to redis.conf |
-| | | `null` | Persistence not attempted (`TAS_REDIS_PERSISTENCE=false`) |
-
-See [REDIS_PERSISTENCE.md](REDIS_PERSISTENCE.md) for operator guidance.
+| `redis_persistence_active` | bool \| string | `true` / `false` / `"unknown"` | Whether AOF persistence is on in Redis. This field reports on Redis only, not on PostgreSQL. |
+| `config_rewrite_succeeded` | bool \| null | `true` / `false` / `null` | Whether Redis `CONFIG REWRITE` succeeded at startup. The value is `null` when `TAS_REDIS_PERSISTENCE=false`. |
+| `policy_storage.backend` | string | `"redis"` / `"postgresql"` | Policy store selected by `TAS_POLICY_BACKEND` |
+| `policy_storage.reachable` | bool | `true` / `false` | Whether the active policy store responds to a live connectivity check (`PING` for Redis or `SELECT 1` on a fresh connection for PostgreSQL) |
+See [STORAGE_OPERATIONS.md](STORAGE_OPERATIONS.md) for operator guidance on Redis persistence and PostgreSQL policy storage.
 
 ## Run TAS with ProductionConfig or DevelopmentConfig
 

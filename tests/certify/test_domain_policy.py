@@ -17,6 +17,7 @@ from flask import Flask
 from tas import tas_vm
 from tas.auth import init_client_auth, init_management_auth
 from tas.certify.policy_routes import certify_policy_bp
+from tas.policy_store import RedisPolicyStore
 
 CLIENT_API_KEY = "a" * 64
 MGMT_API_KEY = "b" * 64
@@ -72,6 +73,9 @@ class FakeRedis:
 
         return [k for k in list(self._store) if fnmatch.fnmatch(k, match)]
 
+    def ping(self):
+        return True
+
 
 @pytest.fixture()
 def app():
@@ -82,7 +86,9 @@ def app():
     test_app.config["TAS_ENFORCE_SIGNED_POLICIES"] = False
     test_app.config["TAS_CERTIFY_MAX_POLICIES"] = 32
 
-    test_app.extensions["redis"] = FakeRedis()
+    fake_redis = FakeRedis()
+    test_app.extensions["redis"] = fake_redis
+    test_app.extensions["policy_store"] = RedisPolicyStore(fake_redis)
 
     init_client_auth(test_app)
     init_management_auth(test_app)
@@ -93,6 +99,11 @@ def app():
 @pytest.fixture()
 def redis(app):
     return app.extensions["redis"]
+
+
+@pytest.fixture()
+def policy_store(app):
+    return app.extensions["policy_store"]
 
 
 @pytest.fixture()
@@ -369,39 +380,41 @@ def _fake_verify_passing(passing_id):
 
 
 class TestDomainVerify:
-    def test_passes_on_first_matching_member(self, app, redis, monkeypatch):
+    def test_passes_on_first_matching_member(
+        self, app, policy_store, redis, monkeypatch
+    ):
         _seed_domain(redis, "prod", ["pol-a", "pol-b"])
         monkeypatch.setattr(tas_vm, "verify", _fake_verify_passing("pol-b"))
         with app.app_context():
             ok, key_id, err = tas_vm.domain_verify(
-                redis, "nonce", "amd-sev-snp", "evidence", "prod"
+                policy_store, redis, "nonce", "amd-sev-snp", "evidence", "prod"
             )
         assert ok is True
         assert key_id == "key-pol-b"
         assert err is None
 
-    def test_fails_when_no_member_matches(self, app, redis, monkeypatch):
+    def test_fails_when_no_member_matches(self, app, policy_store, redis, monkeypatch):
         _seed_domain(redis, "prod", ["pol-a", "pol-b"])
         monkeypatch.setattr(tas_vm, "verify", _fake_verify_passing("none"))
         with app.app_context():
             ok, key_id, err = tas_vm.domain_verify(
-                redis, "nonce", "amd-sev-snp", "evidence", "prod"
+                policy_store, redis, "nonce", "amd-sev-snp", "evidence", "prod"
             )
         assert ok is False
         assert key_id is None
         assert err == "attestation did not match"
 
-    def test_unknown_domain_policy(self, app, redis, monkeypatch):
+    def test_unknown_domain_policy(self, app, policy_store, redis, monkeypatch):
         monkeypatch.setattr(tas_vm, "verify", _fake_verify_passing("pol-a"))
         with app.app_context():
             ok, key_id, err = tas_vm.domain_verify(
-                redis, "nonce", "amd-sev-snp", "evidence", "missing"
+                policy_store, redis, "nonce", "amd-sev-snp", "evidence", "missing"
             )
         assert ok is False
         assert err == "Domain policy not found"
 
     def test_requested_policy_id_only_evaluates_that_policy(
-        self, app, redis, monkeypatch
+        self, app, policy_store, redis, monkeypatch
     ):
         _seed_domain(redis, "prod", ["pol-a", "pol-b"])
         calls = []
@@ -413,6 +426,7 @@ class TestDomainVerify:
         monkeypatch.setattr(tas_vm, "verify", _verify)
         with app.app_context():
             ok, key_id, err = tas_vm.domain_verify(
+                policy_store,
                 redis,
                 "nonce",
                 "amd-sev-snp",
@@ -424,11 +438,14 @@ class TestDomainVerify:
         assert key_id == "key-pol-b"
         assert calls == ["pol-b"]
 
-    def test_requested_policy_id_not_permitted(self, app, redis, monkeypatch):
+    def test_requested_policy_id_not_permitted(
+        self, app, policy_store, redis, monkeypatch
+    ):
         _seed_domain(redis, "prod", ["pol-a", "pol-b"])
         monkeypatch.setattr(tas_vm, "verify", _fake_verify_passing("pol-a"))
         with app.app_context():
             ok, key_id, err = tas_vm.domain_verify(
+                policy_store,
                 redis,
                 "nonce",
                 "amd-sev-snp",
@@ -442,7 +459,7 @@ class TestDomainVerify:
             == "Requested policy-id is not permitted by the domain policy for this TEE type"
         )
 
-    def test_missing_member_is_skipped(self, app, redis, monkeypatch):
+    def test_missing_member_is_skipped(self, app, policy_store, redis, monkeypatch):
         # pol-a referenced but not stored; pol-b stored and passes.
         redis.set(
             "domain-policy:prod",
@@ -452,22 +469,26 @@ class TestDomainVerify:
         monkeypatch.setattr(tas_vm, "verify", _fake_verify_passing("pol-b"))
         with app.app_context():
             ok, key_id, err = tas_vm.domain_verify(
-                redis, "nonce", "amd-sev-snp", "evidence", "prod"
+                policy_store, redis, "nonce", "amd-sev-snp", "evidence", "prod"
             )
         assert ok is True
         assert key_id == "key-pol-b"
 
-    def test_no_certify_policies_for_tee_type(self, app, redis, monkeypatch):
+    def test_no_certify_policies_for_tee_type(
+        self, app, policy_store, redis, monkeypatch
+    ):
         _seed_domain(redis, "prod", ["pol-a"], tee_type="amd-sev-snp")
         monkeypatch.setattr(tas_vm, "verify", _fake_verify_passing("pol-a"))
         with app.app_context():
             ok, key_id, err = tas_vm.domain_verify(
-                redis, "nonce", "intel-tdx", "evidence", "prod"
+                policy_store, redis, "nonce", "intel-tdx", "evidence", "prod"
             )
         assert ok is False
         assert "no certify policies for TEE type 'intel-tdx'" in err
 
-    def test_selects_only_matching_tee_type(self, app, redis, monkeypatch):
+    def test_selects_only_matching_tee_type(
+        self, app, policy_store, redis, monkeypatch
+    ):
         # prod lists a SEV policy for amd-sev-snp and a TDX policy for intel-tdx;
         # an amd-sev-snp request must only evaluate the SEV member.
         redis.set(
@@ -498,13 +519,15 @@ class TestDomainVerify:
         monkeypatch.setattr(tas_vm, "verify", _verify)
         with app.app_context():
             ok, key_id, err = tas_vm.domain_verify(
-                redis, "nonce", "amd-sev-snp", "evidence", "prod"
+                policy_store, redis, "nonce", "amd-sev-snp", "evidence", "prod"
             )
         assert ok is True
         assert key_id == "key-sev-pol"
         assert calls == ["sev-pol"]  # tdx-pol is never fetched or evaluated
 
-    def test_mismatched_member_type_is_skipped(self, app, redis, monkeypatch):
+    def test_mismatched_member_type_is_skipped(
+        self, app, policy_store, redis, monkeypatch
+    ):
         # A TDX-typed policy mis-grouped under amd-sev-snp must be skipped by the
         # defense-in-depth guard even though verify() would otherwise pass.
         redis.set(
@@ -522,13 +545,13 @@ class TestDomainVerify:
         monkeypatch.setattr(tas_vm, "verify", lambda *a, **k: (True, None))
         with app.app_context():
             ok, key_id, err = tas_vm.domain_verify(
-                redis, "nonce", "amd-sev-snp", "evidence", "prod"
+                policy_store, redis, "nonce", "amd-sev-snp", "evidence", "prod"
             )
         assert ok is False
         assert err == "certify policy type does not match the attestation evidence"
 
     def test_gpu_evidence_verified_once_across_candidates(
-        self, app, redis, monkeypatch
+        self, app, policy_store, redis, monkeypatch
     ):
         # With multiple candidate certify-policies, the (expensive) GPU evidence
         # verification must run a single time, not once per candidate.
@@ -556,6 +579,7 @@ class TestDomainVerify:
         gpu_list = [{"type": "gpu-nvidia", "evidence": "x", "device-index": 0}]
         with app.app_context():
             ok, key_id, err = tas_vm.domain_verify(
+                policy_store,
                 redis,
                 "nonce",
                 "amd-sev-snp",
@@ -569,7 +593,9 @@ class TestDomainVerify:
         assert key_id == "key-pol-b"
         assert calls["n"] == 1
 
-    def test_gpu_evidence_failure_short_circuits_domain(self, app, redis, monkeypatch):
+    def test_gpu_evidence_failure_short_circuits_domain(
+        self, app, policy_store, redis, monkeypatch
+    ):
         # Invalid GPU evidence is policy-independent, so the domain must fail
         # immediately without evaluating any certify-policy.
         _seed_domain(redis, "prod", ["pol-a", "pol-b"])
@@ -589,6 +615,7 @@ class TestDomainVerify:
         gpu_list = [{"type": "gpu-nvidia", "evidence": "x", "device-index": 0}]
         with app.app_context():
             ok, key_id, err = tas_vm.domain_verify(
+                policy_store,
                 redis,
                 "nonce",
                 "amd-sev-snp",
@@ -603,7 +630,7 @@ class TestDomainVerify:
         assert verify_calls["n"] == 0
 
     def test_shared_gpu_results_apply_each_candidate_policy(
-        self, app, redis, monkeypatch
+        self, app, redis, policy_store, monkeypatch
     ):
         """Verify GPU evidence once across domain candidates while evaluating each policy's GPU claims."""
         nvidia = pytest.importorskip("nvidia_pytools")
@@ -643,6 +670,7 @@ class TestDomainVerify:
         monkeypatch.setattr(tas_vm, "gpu_validate_claims", validate)
         with app.app_context():
             result = tas_vm.domain_verify(
+                policy_store,
                 redis,
                 "nonce",
                 "amd-sev-snp",
@@ -679,7 +707,7 @@ class TestDomainVerify:
         ids=["int", "str", "dict", "none-entry", "no-index", "dup-index"],
     )
     def test_malformed_gpu_list_rejected_before_policy_lookup(
-        self, app, redis, monkeypatch, gpu_list, expected_error
+        self, app, redis, policy_store, monkeypatch, gpu_list, expected_error
     ):
         # Malformed GPU input is rejected before the domain-policy is even
         # fetched, and never reaches GPU or TEE verification.
@@ -695,11 +723,12 @@ class TestDomainVerify:
         )
         monkeypatch.setattr(
             tas_vm,
-            "get_domain_policy_from_redis",
+            "get_domain_policy",
             lambda *a, **k: pytest.fail("domain policy must not be fetched"),
         )
         with app.app_context():
             ok, key_id, err = tas_vm.domain_verify(
+                policy_store,
                 redis,
                 "nonce",
                 "amd-sev-snp",
