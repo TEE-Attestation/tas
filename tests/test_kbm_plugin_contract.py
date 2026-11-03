@@ -158,6 +158,11 @@ class TestKBMPluginContract:
                 ctm, "KBM_HOST_KWARGS", set()
             ), "tas_kbm_thales_ctm should declare redis_client in KBM_HOST_KWARGS"
 
+        # tas_kbm_openbao: creation is coordinated by KV v2 CAS, not a host dependency
+        if "tas_kbm_openbao" in kbm_plugins:
+            openbao = kbm_plugins["tas_kbm_openbao"]
+            assert getattr(openbao, "KBM_HOST_KWARGS", set()) == set()
+
         # tas_kbm_kmip_json: should declare empty set
         if "tas_kbm_kmip_json" in kbm_plugins:
             kmip = kbm_plugins["tas_kbm_kmip_json"]
