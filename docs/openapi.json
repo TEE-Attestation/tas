@@ -319,6 +319,57 @@
           "version"
         ]
       },
+      "AttestRequest": {
+        "type": "object",
+        "properties": {
+          "nonce": {
+            "type": "string",
+            "description": "Caller-chosen random nonce, 16-64 bytes as hexadecimal",
+            "example": "3f0c6a1e9b2d4c7a8e5f1b0d2c4a6e8f1a3b5c7d9e0f2a4b6c8d0e1f3a5b7c9d"
+          }
+        },
+        "required": [
+          "nonce"
+        ]
+      },
+      "AttestResponse": {
+        "type": "object",
+        "properties": {
+          "provider": {
+            "type": "string",
+            "description": "Kernel TSM provider that produced the report",
+            "enum": [
+              "sev_guest",
+              "tdx_guest"
+            ]
+          },
+          "nonce": {
+            "type": "string",
+            "description": "The nonce from the request, echoed"
+          },
+          "tls_cert_sha256": {
+            "type": "string",
+            "description": "SHA-256 (hex) of the DER TLS leaf certificate bound into REPORT_DATA; must match the certificate the caller observed in its own TLS handshake"
+          },
+          "report": {
+            "type": "string",
+            "format": "byte",
+            "description": "Base64 raw report (SEV-SNP ATTESTATION_REPORT, 1184 bytes; TDX quote)"
+          },
+          "auxblob": {
+            "type": "string",
+            "format": "byte",
+            "nullable": true,
+            "description": "Base64 raw auxiliary blob when the provider supplies one (SEV-SNP GHCB certificate table), else null"
+          }
+        },
+        "required": [
+          "provider",
+          "nonce",
+          "tls_cert_sha256",
+          "report"
+        ]
+      },
       "StatusResponse": {
         "type": "object",
         "description": "Redis persistence and policy storage status. redis_persistence_active and config_rewrite_succeeded report Redis-only persistence state. policy_storage reports the active policy storage backend and reachability.",
@@ -820,6 +871,115 @@
           },
           "401": {
             "description": "Unauthorized \u2014 invalid or missing management API key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/attest/v0/report": {
+      "post": {
+        "tags": [
+          "Management"
+        ],
+        "summary": "TAS-attestation report of the CVM running TAS",
+        "description": "Returns the raw attestation report (AMD SEV-SNP attestation report or Intel TDX quote) of the confidential VM that TAS itself runs in, so an operator can verify TAS before trusting it with secrets. The report is bound to the caller's nonce and to TAS's TLS certificate: REPORT_DATA = SHA-512(\"TAS-attest/v1\" || nonce || SHA-256(TLS leaf certificate DER)). Nothing is parsed server-side; verification (signature chain, REPORT_DATA, measurement, policy) is the caller's job, e.g. with `sev-verify-tas` from sev_pytools. Unauthenticated unless TAS_ATTEST_REQUIRE_MANAGEMENT_API_KEY is enabled. Subject to a global budget (TAS_ATTEST_RATE_LIMIT, default 2 per minute) because report generation is an expensive, serialised firmware request.",
+        "security": [
+          {},
+          {
+            "ManagementApiKeyAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AttestRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Attestation report generated",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "example": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AttestResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or invalid nonce",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Management API key required (TAS_ATTEST_REQUIRE_MANAGEMENT_API_KEY=true) and missing or invalid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Report budget exhausted; retry after the number of seconds in Retry-After",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "TAS is not running in a confidential VM (no configfs-tsm report slot)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Report temporarily unavailable \u2014 another report is being generated (retry after Retry-After seconds) or the TLS certificate needed for binding cannot be read",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {

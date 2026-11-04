@@ -44,6 +44,22 @@ TAS_ENFORCE_SIGNED_POLICIES: true
 # Certificate issuance feature (disabled by default until production-ready)
 #TAS_CERTIFY_ENABLED: false
 
+# Require the management API key (X-MANAGEMENT-API-KEY) for the TAS-attestation
+# endpoint POST /attest/v0/report, used by the operator to verify TAS runs in a
+# genuine CVM before trusting it. Off by default so TAS can be attested anonymously.
+#TAS_ATTEST_REQUIRE_MANAGEMENT_API_KEY: false
+
+# Global (not per-caller) budget of TAS-attestation reports; only served
+# reports count. Report generation is an expensive, serialised firmware request.
+#TAS_ATTEST_RATE_LIMIT: "2 per minute"
+
+# configfs-tsm slot (provisioned by tas-tsm-slot.service), the TLS certificate
+# bound into the report, and the lock file serialising report generation (keep
+# it in a directory only the TAS user can write to).
+#TAS_ATTEST_TSM_SLOT: "/sys/kernel/config/tsm/report/tas"
+#TAS_ATTEST_TLS_CERT_FILE: "/etc/tas/certs/server.crt"
+#TAS_ATTEST_LOCK_FILE: "/var/lib/tas/attest.lock"
+
 # Backend used to verify NVIDIA GPU evidence:
 #   "remote" - NVIDIA Remote Attestation Service (NRAS)
 #   "local"  - verify locally with nvidia_pytools (RIMs cached in Redis)

@@ -567,6 +567,7 @@ curl -H "X-API-KEY: your-api-key" http://localhost:5000/version
 | `/management/policy/v0/get/<key>` | GET | `X-MANAGEMENT-API-KEY` | Retrieve security policy |
 | `/management/policy/v0/list` | GET | `X-MANAGEMENT-API-KEY` | List all policies |
 | `/management/policy/v0/delete/<key>` | DELETE | `X-MANAGEMENT-API-KEY` | Delete security policy |
+| `/attest/v0/report` | POST | none by default; `X-MANAGEMENT-API-KEY` when `TAS_ATTEST_REQUIRE_MANAGEMENT_API_KEY=true` | Raw attestation report of the CVM running TAS, bound to the caller's nonce and to TAS's TLS certificate, for verifying TAS before trusting it (see `sev-verify-tas` in sev_pytools). Globally rate-limited (`TAS_ATTEST_RATE_LIMIT`, default 2 per minute) |
 
 ### Deprecated Endpoints
 

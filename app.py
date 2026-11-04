@@ -17,6 +17,7 @@ import sys
 import redis
 from flask import Flask, request
 
+from tas.attest_routes import attest_bp
 from tas.auth import init_client_auth, init_management_auth
 from tas.client_routes import client_bp
 from tas.config_loader import load_configuration, resolve_ratelimit_storage
@@ -24,7 +25,7 @@ from tas.error_handlers import register_error_handlers
 from tas.management_routes import management_bp
 from tas.nonce import check_redis_version
 from tas.policy_store import init_policy_store
-from tas.rate_limiter import setup_rate_limiter
+from tas.rate_limiter import setup_attest_budget, setup_rate_limiter
 from tas.tas_logging import configure_external_logging, setup_logging
 
 # Initialize Flask app and load configuration
@@ -224,6 +225,14 @@ else:
 # Register blueprints
 app.register_blueprint(management_bp)
 app.register_blueprint(client_bp)
+app.register_blueprint(attest_bp)  # TAS-attestation (configfs-tsm)
+if app.config.get("TAS_ATTEST_REQUIRE_MANAGEMENT_API_KEY", False):
+    logger.info("TAS-attestation endpoint requires the management API key")
+else:
+    logger.info(
+        "TAS-attestation endpoint is unauthenticated "
+        "(TAS_ATTEST_REQUIRE_MANAGEMENT_API_KEY=false)"
+    )
 
 # Certificate issuance is gated behind a feature flag and disabled by default
 # until the flow is production-ready.
@@ -253,6 +262,8 @@ if app.config.get("TAS_TRUST_X_FORWARDED_FOR"):
 
 # Apply rate limit to all client blueprint routes
 limiter = setup_rate_limiter(app, client_bp, _rl_storage_uri, _rl_storage_options)
+# TAS-attestation uses its own global budget, enforced inside the report slot lock
+setup_attest_budget(app, _rl_storage_uri, _rl_storage_options)
 if certify_enabled:
     limiter.limit(app.config.get("TAS_CLIENT_RATE_LIMIT", "200 per minute"))(certify_bp)
 
