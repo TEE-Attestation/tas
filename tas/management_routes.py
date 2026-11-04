@@ -22,7 +22,7 @@ from .policy_helper import (
     validate_policy_key,
     validate_policy_metadata,
 )
-from .policy_store import POLICY_NAMESPACE, PolicyAlreadyExists
+from .policy_store import POLICY_NAMESPACE, PolicyAlreadyExists, PolicyStoreUnavailable
 from .tas_logging import get_logger
 
 logger = get_logger(__name__)
@@ -90,6 +90,11 @@ def store_policy():
     except PolicyAlreadyExists:
         logger.error(f"Policy '{policy_key}' already exists")
         return jsonify({"error": f"Policy '{policy_key}' already exists"}), 409
+    except PolicyStoreUnavailable as e:
+        if current_app.config.get("TAS_POLICY_AUTHORIZATION", "none") == "etcd":
+            raise
+        logger.error(f"Error storing policy: {e}")
+        return jsonify({"error": "Failed to store policy"}), 500
     except Exception as e:
         logger.error(f"Error storing policy: {e}")
         return jsonify({"error": "Failed to store policy"}), 500
@@ -135,6 +140,11 @@ def get_policy(policy_id):
     except json.JSONDecodeError as e:
         logger.error(f"Error parsing policy JSON: {e}")
         return jsonify({"error": "Invalid policy data in policy store"}), 500
+    except PolicyStoreUnavailable as e:
+        if current_app.config.get("TAS_POLICY_AUTHORIZATION", "none") == "etcd":
+            raise
+        logger.error(f"Error retrieving policy: {e}")
+        return jsonify({"error": "Failed to retrieve policy"}), 500
     except Exception as e:
         logger.error(f"Error retrieving policy: {e}")
         return jsonify({"error": "Failed to retrieve policy"}), 500
@@ -179,6 +189,11 @@ def list_policies():
         logger.info(f"Successfully listed {len(policies)} policies")
         return jsonify({"policies": policies, "count": len(policies)}), 200
 
+    except PolicyStoreUnavailable as e:
+        if current_app.config.get("TAS_POLICY_AUTHORIZATION", "none") == "etcd":
+            raise
+        logger.error(f"Error listing policies: {e}")
+        return jsonify({"error": "Failed to list policies"}), 500
     except Exception as e:
         logger.error(f"Error listing policies: {e}")
         return jsonify({"error": "Failed to list policies"}), 500
@@ -213,6 +228,11 @@ def delete_policy(policy_id):
 
         return jsonify({"message": f"Policy '{policy_key}' deleted successfully"}), 200
 
+    except PolicyStoreUnavailable as e:
+        if current_app.config.get("TAS_POLICY_AUTHORIZATION", "none") == "etcd":
+            raise
+        logger.error(f"Error deleting policy: {e}")
+        return jsonify({"error": "Failed to delete policy"}), 500
     except Exception as e:
         logger.error(f"Error deleting policy: {e}")
         return jsonify({"error": "Failed to delete policy"}), 500
@@ -243,6 +263,9 @@ def status():
     reachable = bool(policy_store.is_reachable()) if policy_store is not None else False
     return jsonify(
         {
+            "policy_authorization": current_app.config.get(
+                "TAS_POLICY_AUTHORIZATION", "none"
+            ),
             "redis_persistence_active": persistence_active,
             "config_rewrite_succeeded": config_rewrite_ok,
             "policy_storage": {

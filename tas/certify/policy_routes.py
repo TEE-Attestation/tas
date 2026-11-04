@@ -28,6 +28,7 @@ from ..policy_store import (
     CERTIFY_POLICY_NAMESPACE,
     DOMAIN_POLICY_NAMESPACE,
     PolicyAlreadyExists,
+    PolicyStoreUnavailable,
 )
 from ..tas_logging import get_logger
 from ..tas_vm import POLICY_TYPE_BY_TEE, SUPPORTED_TEE_TYPES
@@ -106,6 +107,11 @@ def store_certify_policy():
             jsonify({"error": f"Certify-policy '{policy_id}' already exists"}),
             409,
         )
+    except PolicyStoreUnavailable as e:
+        if current_app.config.get("TAS_POLICY_AUTHORIZATION", "none") == "etcd":
+            raise
+        logger.error(f"Error storing certify-policy: {e}")
+        return jsonify({"error": "Failed to store certify-policy"}), 500
     except Exception as e:
         logger.error(f"Error storing certify-policy: {e}")
         return jsonify({"error": "Failed to store certify-policy"}), 500
@@ -137,6 +143,11 @@ def get_certify_policy(policy_id):
     except json.JSONDecodeError as e:
         logger.error(f"Error parsing certify-policy JSON: {e}")
         return jsonify({"error": "Invalid certify-policy data in policy store"}), 500
+    except PolicyStoreUnavailable as e:
+        if current_app.config.get("TAS_POLICY_AUTHORIZATION", "none") == "etcd":
+            raise
+        logger.error(f"Error retrieving certify-policy: {e}")
+        return jsonify({"error": "Failed to retrieve certify-policy"}), 500
     except Exception as e:
         logger.error(f"Error retrieving certify-policy: {e}")
         return jsonify({"error": "Failed to retrieve certify-policy"}), 500
@@ -175,6 +186,11 @@ def list_certify_policies():
                 )
 
         return jsonify({"certify_policies": policies, "count": len(policies)}), 200
+    except PolicyStoreUnavailable as e:
+        if current_app.config.get("TAS_POLICY_AUTHORIZATION", "none") == "etcd":
+            raise
+        logger.error(f"Error listing certify-policies: {e}")
+        return jsonify({"error": "Failed to list certify-policies"}), 500
     except Exception as e:
         logger.error(f"Error listing certify-policies: {e}")
         return jsonify({"error": "Failed to list certify-policies"}), 500
@@ -202,6 +218,11 @@ def delete_certify_policy(policy_id):
             jsonify({"message": f"Certify-policy '{policy_id}' deleted successfully"}),
             200,
         )
+    except PolicyStoreUnavailable as e:
+        if current_app.config.get("TAS_POLICY_AUTHORIZATION", "none") == "etcd":
+            raise
+        logger.error(f"Error deleting certify-policy: {e}")
+        return jsonify({"error": "Failed to delete certify-policy"}), 500
     except Exception as e:
         logger.error(f"Error deleting certify-policy: {e}")
         return jsonify({"error": "Failed to delete certify-policy"}), 500
@@ -363,6 +384,11 @@ def store_domain_policy():
             jsonify({"error": f"Domain policy '{policy_id}' already exists"}),
             409,
         )
+    except PolicyStoreUnavailable as e:
+        if current_app.config.get("TAS_POLICY_AUTHORIZATION", "none") == "etcd":
+            raise
+        logger.error(f"Error storing domain-policy: {e}")
+        return jsonify({"error": "Failed to store domain policy"}), 500
     except Exception as e:
         logger.error(f"Error storing domain-policy: {e}")
         return jsonify({"error": "Failed to store domain policy"}), 500
@@ -394,6 +420,11 @@ def get_domain_policy(policy_id):
     except json.JSONDecodeError as e:
         logger.error(f"Error parsing domain-policy JSON: {e}")
         return jsonify({"error": "Invalid domain policy data in policy store"}), 500
+    except PolicyStoreUnavailable as e:
+        if current_app.config.get("TAS_POLICY_AUTHORIZATION", "none") == "etcd":
+            raise
+        logger.error(f"Error retrieving domain-policy: {e}")
+        return jsonify({"error": "Failed to retrieve domain policy"}), 500
     except Exception as e:
         logger.error(f"Error retrieving domain-policy: {e}")
         return jsonify({"error": "Failed to retrieve domain policy"}), 500
@@ -436,6 +467,11 @@ def list_domain_policies():
             ),
             200,
         )
+    except PolicyStoreUnavailable as e:
+        if current_app.config.get("TAS_POLICY_AUTHORIZATION", "none") == "etcd":
+            raise
+        logger.error(f"Error listing domain-policies: {e}")
+        return jsonify({"error": "Failed to list domain policies"}), 500
     except Exception as e:
         logger.error(f"Error listing domain-policies: {e}")
         return jsonify({"error": "Failed to list domain policies"}), 500
@@ -463,6 +499,11 @@ def delete_domain_policy(policy_id):
             jsonify({"message": f"Domain policy '{policy_id}' deleted successfully"}),
             200,
         )
+    except PolicyStoreUnavailable as e:
+        if current_app.config.get("TAS_POLICY_AUTHORIZATION", "none") == "etcd":
+            raise
+        logger.error(f"Error deleting domain-policy: {e}")
+        return jsonify({"error": "Failed to delete domain policy"}), 500
     except Exception as e:
         logger.error(f"Error deleting domain-policy: {e}")
         return jsonify({"error": "Failed to delete domain policy"}), 500

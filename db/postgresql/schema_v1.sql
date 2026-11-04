@@ -11,6 +11,9 @@
 --
 --   psql "$TAS_POSTGRES_DSN" -v ON_ERROR_STOP=1 -f db/postgresql/schema_v1.sql
 --
+-- An existing v1 database initialized from an earlier draft can rerun this
+-- script to add the publication table without deleting policy rows.
+--
 
 BEGIN;
 
@@ -20,6 +23,15 @@ CREATE TABLE IF NOT EXISTS tas_policies (
     document   TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (namespace, policy_id)
+);
+
+CREATE TABLE IF NOT EXISTS tas_policy_publications (
+    namespace      TEXT NOT NULL CHECK (namespace IN ('policy', 'certify-policy', 'domain-policy')),
+    policy_id      TEXT NOT NULL,
+    publication_id TEXT NOT NULL,
+    document       TEXT NOT NULL,
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (namespace, policy_id, publication_id)
 );
 
 CREATE TABLE IF NOT EXISTS tas_schema_version (

@@ -28,10 +28,25 @@ SERVER_PORT: 5000
 # Redis connection
 #TAS_REDIS_HOST: "localhost"
 #TAS_REDIS_PORT: 6379
+#TAS_REDIS_PASSWORD: "change-me"
 
 # Policy storage backend (`redis` or `postgresql`)
 #TAS_POLICY_BACKEND: "redis"
 #TAS_POSTGRES_DSN: "postgresql://tas@localhost:5432/tas"
+
+# Policy rollback protection (`none` or `etcd`). See docs/STORAGE_OPERATIONS.md.
+#TAS_POLICY_AUTHORIZATION: "none"
+#TAS_POLICY_OPERATION_TIMEOUT_SECONDS: 20
+#TAS_ETCD_ENDPOINTS:
+#  - "https://etcd-1.internal:2379"
+#  - "https://etcd-2.internal:2379"
+#  - "https://etcd-3.internal:2379"
+#TAS_ETCD_CA_FILE: "/etc/tas/etcd/ca.pem"
+#TAS_ETCD_USERNAME: "tas"
+#TAS_ETCD_PASSWORD: "change-me"
+#TAS_ETCD_CERT_FILE: "/etc/tas/etcd/client.pem"
+#TAS_ETCD_KEY_FILE: "/etc/tas/etcd/client-key.pem"
+#TAS_ETCD_TIMEOUT_SECONDS: 5
 
 # KBM plugin discovery and config
 #TAS_PLUGIN_PREFIX: "tas_kbm"

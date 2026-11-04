@@ -299,9 +299,15 @@ components:
       - report
     StatusResponse:
       type: object
-      description: Redis persistence and policy storage status. redis_persistence_active and config_rewrite_succeeded report
-        Redis-only persistence state. policy_storage reports the active policy storage backend and reachability.
+      description: Policy authorization, Redis persistence, and policy storage status.
       properties:
+        policy_authorization:
+          type: string
+          description: Policy rollback-protection mode
+          enum:
+          - none
+          - etcd
+          example: none
         redis_persistence_active:
           description: Redis-only indicator of whether AOF + RDB persistence is currently active. "unknown" if Redis could
             not be queried.
@@ -320,7 +326,7 @@ components:
           example: true
         policy_storage:
           type: object
-          description: Active policy storage backend status.
+          description: Active policy storage backend status. In protected mode, reachability includes etcd and both document stores.
           properties:
             backend:
               type: string
@@ -335,6 +341,7 @@ components:
           - backend
           - reachable
       required:
+      - policy_authorization
       - redis_persistence_active
       - config_rewrite_succeeded
       - policy_storage

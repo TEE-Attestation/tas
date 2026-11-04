@@ -58,6 +58,7 @@ from tas.policy_store import (
     init_policy_store,
 )
 from tas.postgres_policy_store import PostgresPolicyStore, _safe_driver_error
+from tas.postgres_publication_store import PostgresPublicationStore
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCHEMA_SQL_PATH = REPO_ROOT / "db" / "postgresql" / "schema_v1.sql"
@@ -1216,6 +1217,110 @@ class TestPolicyStoreOutageFailClosed:
 
 
 class TestPostgresSchemaAndOperations:
+    def test_initial_schema_supports_both_policy_stores(self, pg_dsn):
+        policy_store = PostgresPolicyStore(pg_dsn)
+        policy_store.verify_schema()
+        policy_store.create(POLICY_NAMESPACE, "policy-1", '{"legacy": true}')
+
+        publications = PostgresPublicationStore(pg_dsn)
+        publications.verify_schema()
+        key = (POLICY_NAMESPACE, "policy-1", "publication-1")
+        document = '{"metadata":{"policy_id":"policy-1"}}'
+        second_key = (POLICY_NAMESPACE, "policy-1", "publication-2")
+        second_document = '{"metadata":{"policy_id":"policy-1"},"revision":2}'
+        assert publications.insert(*key, document)
+        assert not publications.insert(*key, "changed")
+        assert publications.insert(*second_key, second_document)
+        assert publications.get(*key) == document
+        assert publications.get_many(
+            [key, second_key, (POLICY_NAMESPACE, "missing", "id")]
+        ) == {
+            key: document,
+            second_key: second_document,
+        }
+        assert policy_store.get(POLICY_NAMESPACE, "policy-1") == '{"legacy": true}'
+        assert set(publications.list_ids(POLICY_NAMESPACE, "policy-1")) == {
+            "publication-1",
+            "publication-2",
+        }
+        assert publications.delete(*key)
+        assert not publications.delete(*key)
+        assert publications.get(*second_key) == second_document
+        assert policy_store.get(POLICY_NAMESPACE, "policy-1") == '{"legacy": true}'
+
+    @pytest.mark.parametrize("authorization", ["none", "etcd"])
+    def test_initial_schema_starts_both_authorization_modes(
+        self, pg_dsn, authorization
+    ):
+        from tas.etcd_client import EtcdKV
+        from tas.etcd_protected_policy_store import (
+            POLICY_AUTH_FORMAT,
+            POLICY_AUTH_FORMAT_KEY,
+        )
+
+        app = Flask(__name__)
+        app.config.update(
+            TAS_POLICY_BACKEND="postgresql",
+            TAS_POSTGRES_DSN=pg_dsn,
+            TAS_POLICY_AUTHORIZATION=authorization,
+            TAS_ETCD_ENDPOINTS="https://etcd.example",
+            TAS_ETCD_CA_FILE="/etc/tas/ca.pem",
+            TAS_ETCD_USERNAME="tas",
+            TAS_ETCD_PASSWORD="test",
+        )
+        fake_etcd = MagicMock()
+        fake_etcd.get.return_value = EtcdKV(
+            POLICY_AUTH_FORMAT_KEY, POLICY_AUTH_FORMAT, 1, 1, 1
+        )
+
+        with patch("tas.etcd_client.EtcdClient", return_value=fake_etcd) as client:
+            store = init_policy_store(app, RecordingFakeRedis())
+
+        assert store.backend_name == "postgresql"
+        assert app.extensions["policy_store"] is store
+        assert store.is_reachable()
+        assert client.call_count == (1 if authorization == "etcd" else 0)
+
+    def test_reapplying_schema_adds_publication_table_without_losing_policies(
+        self, pg_dsn, pg_cluster
+    ):
+        policy_store = PostgresPolicyStore(pg_dsn)
+        policy_store.create(POLICY_NAMESPACE, "policy-1", '{"legacy": true}')
+        with psycopg.connect(pg_dsn, autocommit=True) as conn, conn.cursor() as cur:
+            cur.execute("DROP TABLE tas_policy_publications")
+
+        policy_store.verify_schema()
+        publications = PostgresPublicationStore(pg_dsn)
+        with pytest.raises(RuntimeError, match=r"schema_v1\.sql"):
+            publications.verify_schema()
+
+        subprocess.run(
+            [
+                pg_cluster["psql_bin"],
+                pg_dsn,
+                "-v",
+                "ON_ERROR_STOP=1",
+                "-f",
+                str(SCHEMA_SQL_PATH),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        publications.verify_schema()
+        assert policy_store.get(POLICY_NAMESPACE, "policy-1") == '{"legacy": true}'
+
+    @pytest.mark.parametrize("version", [2, 99])
+    def test_both_policy_stores_reject_unsupported_schema_versions(
+        self, pg_dsn, version
+    ):
+        with psycopg.connect(pg_dsn, autocommit=True) as conn, conn.cursor() as cur:
+            cur.execute("UPDATE tas_schema_version SET version = %s", (version,))
+
+        for store in (PostgresPolicyStore(pg_dsn), PostgresPublicationStore(pg_dsn)):
+            with pytest.raises(RuntimeError, match="schema version"):
+                store.verify_schema()
+
     @pytest.mark.parametrize("exit_mode", ["complete", "close", "outage"])
     def test_list_uses_server_cursor_and_releases_connection(
         self, pg_dsn, monkeypatch, exit_mode

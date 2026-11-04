@@ -196,6 +196,7 @@ def certify() -> tuple[Response, int]:
     else:
         binding_key = spki_der
 
+    approval_snapshots = []
     is_verified, key_id, verify_error = domain_verify(
         current_app.extensions["policy_store"],
         current_app.extensions["redis"],
@@ -207,6 +208,7 @@ def certify() -> tuple[Response, int]:
         wrapping_key=binding_key,
         report_data_binding=True,
         gpu_list=gpu_evidence,
+        approval_snapshots=approval_snapshots,
     )
 
     if not is_verified:
@@ -286,6 +288,8 @@ def certify() -> tuple[Response, int]:
         email_addresses=email_addresses,
     )
 
+    # Confirm both policies are unchanged before signing the certificate.
+    current_app.extensions["policy_store"].check_approvals(approval_snapshots)
     try:
         signature_value = current_app.extensions["cert_sign"](
             current_app.extensions["cert_client"],

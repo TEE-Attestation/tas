@@ -14,6 +14,13 @@ This guide makes it explicit how to set and override TAS and Flask configuration
 
 Higher numbers win.
 
+TAS logs each override it applies at debug level, but it never logs secret
+values. A value shows as `***` when its key is a known secret, such as
+`TAS_POSTGRES_DSN` or `TAS_EPHEMERAL_REDIS_URI`. The same applies when the
+key name contains `PASSWORD`, `PASSWD`, `SECRET`, `TOKEN`, `API_KEY`, `APIKEY`,
+`PRIVATE_KEY`, `CREDENTIAL` or `DSN`. For other URIs, TAS hides the user name
+and password and logs the rest, for example `redis://***@host/0`.
+
 ## How to set configuration values
 
 ### 1) Select the base class
@@ -37,6 +44,7 @@ export TAS_KBM_PLUGIN='tas_kbm_kmip_json'
 export TAS_KBM_CONFIG_FILE='./config/pykmip/alt.conf'
 export TAS_EXTRA_PLUGIN_DIR='/opt/tas/plugins'
 export TAS_POLICY_TRUST='./certs/policy'
+export TAS_POLICY_AUTHORIZATION='etcd'
 ```
 
 ### 3) Set Flask built-ins via FLASK_ prefix
@@ -127,9 +135,18 @@ Stored in Flask's config; set directly via env without prefix:
 | TAS_GPU_MAX_EVIDENCE_ENTRIES | int | `16` | No | Maximum number of GPU evidence entries accepted in a single `get_secret` or `certify` request; requests with more are rejected before any verification work. Bounds the per-request verification cost (and, in local mode, collateral fetches). Must be a positive integer. When raising it, also raise `MAX_CONTENT_LENGTH` to fit the larger body and, for the certify flow, `TAS_CERT_EVIDENCE_DIGEST_MAX_ENTRIES` (which must allow one CPU entry plus one per GPU). |
 | TAS_REDIS_HOST | str | `"localhost"` | No | Hostname or IP address of the Redis server (>= 6.2) used for nonce storage, certificate caching, and policy storage. TAS validates the server version at startup and refuses to start if Redis is older than 6.2. |
 | TAS_REDIS_PORT | int | `6379` | No | Port number of the Redis server. |
-| TAS_REDIS_PASSWORD | str | `""` | No | Redis AUTH password. When set, TAS authenticates to Redis on connection. Always set via environment variable, never in config files. |
+| TAS_REDIS_PASSWORD | str | `""` | No | Redis AUTH password. When set, TAS authenticates to Redis on connection. Can be set in the config file or via environment variable; TAS masks it in logs. |
 | TAS_REDIS_PERSISTENCE | bool | `true` | No | When `true`, TAS configures Redis AOF + RDB persistence at startup via `CONFIG SET`. Set to `false` if your Redis is externally managed or you want to use your own `redis.conf` settings. Check `GET /management/status` for runtime persistence state. See [STORAGE_OPERATIONS.md](STORAGE_OPERATIONS.md) for details. |
 | TAS_POLICY_BACKEND | str | `"redis"` | No | Storage backend for all policy namespaces (`policy`, `certify-policy`, and `domain-policy`). Accepts `"redis"` or `"postgresql"`. Nonces, rate limits, collateral caches, and plugin locks always use Redis. |
+| TAS_POLICY_AUTHORIZATION | str | `"none"` | No | Policy rollback-protection mode. `"none"` preserves existing policy storage behaviour. `"etcd"` requires the etcd settings below and stores approval records in etcd while retaining immutable policy documents in the backend selected by `TAS_POLICY_BACKEND`. It fails closed; it does not fall back to `"none"`. |
+| TAS_POLICY_OPERATION_TIMEOUT_SECONDS | int | `20` | No | Positive deadline in seconds for each protected create or delete. Independent of client timeouts; must be at least `TAS_ETCD_TIMEOUT_SECONDS`. |
+| TAS_ETCD_ENDPOINTS | str or list[str] | `""` | Conditional | HTTPS URL or comma-separated list of URLs for the etcd v3 JSON gateway. Required when `TAS_POLICY_AUTHORIZATION="etcd"`. Reads can fail over across the listed endpoints; each write uses one endpoint only. |
+| TAS_ETCD_CA_FILE | str | `""` | Conditional | CA certificate used to verify etcd's TLS certificate. Required when `TAS_POLICY_AUTHORIZATION="etcd"`. |
+| TAS_ETCD_USERNAME | str | `""` | Conditional | etcd username. Required when `TAS_POLICY_AUTHORIZATION="etcd"`. |
+| TAS_ETCD_PASSWORD | str | `""` | Conditional | etcd password. Required when `TAS_POLICY_AUTHORIZATION="etcd"`. TAS masks it in logs. |
+| TAS_ETCD_CERT_FILE | str | `""` | No | Optional client certificate for mutual TLS. Must be set together with `TAS_ETCD_KEY_FILE`. |
+| TAS_ETCD_KEY_FILE | str | `""` | No | Optional client private key for mutual TLS. Must be set together with `TAS_ETCD_CERT_FILE`. |
+| TAS_ETCD_TIMEOUT_SECONDS | int | `5` | No | Positive timeout in seconds for one etcd HTTP request. When protection is enabled, it must not exceed `TAS_POLICY_OPERATION_TIMEOUT_SECONDS`. |
 | TAS_POSTGRES_DSN | str | `""` | Conditional | PostgreSQL connection string (for example, `postgresql://tas@localhost:5432/tas`). Required when `TAS_POLICY_BACKEND="postgresql"`. Treated as sensitive and masked in logs. |
 | TAS_POSTGRES_CONNECT_TIMEOUT_SECONDS | int | `5` | No | Positive number of seconds TAS waits when opening a PostgreSQL connection. An explicit `connect_timeout` in `TAS_POSTGRES_DSN` takes precedence. |
 | TAS_POSTGRES_STATEMENT_TIMEOUT_SECONDS | int | `5` | No | Positive statement timeout in seconds for PostgreSQL policy operations. A `statement_timeout` set through the DSN `options` parameter (for example, `options='-c statement_timeout=10s'`) takes precedence. |
@@ -314,6 +331,7 @@ storage status. Requires the `X-MANAGEMENT-API-KEY` header.
 
 ```json
 {
+  "policy_authorization": "none",
   "redis_persistence_active": true,
   "config_rewrite_succeeded": true,
   "policy_storage": {
@@ -325,10 +343,11 @@ storage status. Requires the `X-MANAGEMENT-API-KEY` header.
 
 | Field | Type | Values | Meaning |
 |-------|------|--------|---------|
+| `policy_authorization` | string | `"none"` / `"etcd"` | Policy rollback-protection mode selected by `TAS_POLICY_AUTHORIZATION`. |
 | `redis_persistence_active` | bool \| string | `true` / `false` / `"unknown"` | Whether AOF persistence is on in Redis. This field reports on Redis only, not on PostgreSQL. |
 | `config_rewrite_succeeded` | bool \| null | `true` / `false` / `null` | Whether Redis `CONFIG REWRITE` succeeded at startup. The value is `null` when `TAS_REDIS_PERSISTENCE=false`. |
 | `policy_storage.backend` | string | `"redis"` / `"postgresql"` | Policy store selected by `TAS_POLICY_BACKEND` |
-| `policy_storage.reachable` | bool | `true` / `false` | Whether the active policy store responds to a live connectivity check (`PING` for Redis or `SELECT 1` on a fresh connection for PostgreSQL) |
+| `policy_storage.reachable` | bool | `true` / `false` | Whether all components required by the active policy store respond to their reachability checks. In protected mode, this includes `etcd`, the publication backend, and the policy store used in mode `none` for cleanup. |
 See [STORAGE_OPERATIONS.md](STORAGE_OPERATIONS.md) for operator guidance on Redis persistence and PostgreSQL policy storage.
 
 ## Run TAS with ProductionConfig or DevelopmentConfig

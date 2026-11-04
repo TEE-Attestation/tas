@@ -78,6 +78,8 @@ from tas.policy_store import (
     CERTIFY_POLICY_NAMESPACE,
     DOMAIN_POLICY_NAMESPACE,
     POLICY_NAMESPACE,
+    ApprovedPolicy,
+    PolicyApproval,
     PolicyStore,
 )
 from tas.tas_logging import get_logger, log_function_entry, log_function_exit
@@ -569,18 +571,26 @@ def gpu_save_rims_to_redis(redis_client: redis.StrictRedis, rims):
     return ok
 
 
-def get_policy(policy_store: PolicyStore, policy_id: str):
+def get_policy(
+    policy_store: PolicyStore,
+    policy_id: str,
+    approval_snapshots: list[PolicyApproval] | None = None,
+):
     """
-    Fetches and signature-verifies a secret-release policy by ID from the
-    configured policy store.
+    Fetches a secret-release policy by ID from the configured policy store
+    and checks its signature when signing is enforced.
 
     Parameters:
         policy_store (PolicyStore): Policy store instance.
         policy_id (str): The policy ID to fetch.
+        approval_snapshots (list[PolicyApproval], optional): If provided,
+            receives the policy's approval snapshot after successful loading
+            and the configured signature checks, when the store supplies one.
+            None skips snapshot collection.
 
     Returns:
-        policy (dict): The policy JSON if found and valid.
-        key_id (str): The key ID to fetch if the policy used for verification is successful.
+        tuple[dict, str | None]: The policy JSON and its metadata key ID, or
+            None if the key ID is absent.
 
     Raises:
         ValueError: If policy is not found, invalid JSON, not signed when required,
@@ -588,7 +598,11 @@ def get_policy(policy_store: PolicyStore, policy_id: str):
         PolicyStoreUnavailable: If the policy store is unreachable or fails.
     """
     policy_json = _load_signed_object(
-        policy_store, POLICY_NAMESPACE, policy_id, "Policy"
+        policy_store,
+        POLICY_NAMESPACE,
+        policy_id,
+        "Policy",
+        approval_snapshots,
     )
     return policy_json, policy_json.get("metadata", {}).get("key_id")
 
@@ -597,9 +611,13 @@ get_policy_from_redis = get_policy
 
 
 def _load_signed_object(
-    policy_store: PolicyStore, namespace: str, policy_id: str, kind: str
+    policy_store: PolicyStore,
+    namespace: str,
+    policy_id: str,
+    kind: str,
+    approval_snapshots: list[PolicyApproval] | None = None,
 ):
-    """Fetch, JSON-parse, and signature-verify a signed object from the policy store.
+    """Fetch and JSON-parse an object, enforcing the configured signing policy.
 
     Applies the same signing enforcement across all three policy namespaces
     (``TAS_ENFORCE_SIGNED_POLICIES`` + ``TAS_TRUSTED_KEYS``).
@@ -609,6 +627,13 @@ def _load_signed_object(
         namespace: Policy namespace ("policy", "certify-policy", or "domain-policy").
         policy_id: Policy identifier within the namespace.
         kind: Human-readable object kind used in log and error messages.
+        approval_snapshots: Optional list to receive the store's approval
+            snapshot after the object is parsed and passes the configured
+            signature checks. Nothing is appended if the store supplies no
+            approval or the argument is None.
+
+    Returns:
+        dict: The parsed policy object.
 
     Raises:
         ValueError: If the object is missing, invalid JSON, unsigned when
@@ -618,13 +643,18 @@ def _load_signed_object(
     """
     qualified_key = f"{namespace}:{policy_id}"
     logger.info(f"Fetching {kind.lower()} from policy store with key: {qualified_key}")
-    raw = policy_store.get(namespace, policy_id)
-    if not raw:
+    if getattr(type(policy_store), "load_approved", None) is not None:
+        approved = policy_store.load_approved(namespace, policy_id)
+    else:
+        # Preserve compatibility with legacy duck-typed test and plugin stores.
+        raw_document = policy_store.get(namespace, policy_id)
+        approved = ApprovedPolicy(raw_document) if raw_document is not None else None
+    if approved is None or not approved.document:
         logger.error(f"{kind} '{qualified_key}' not found in policy store")
         raise ValueError(f"{kind} not found")
 
     try:
-        obj = json.loads(raw)
+        obj = json.loads(approved.document)
     except json.JSONDecodeError as e:
         logger.error(f"Failed to parse {kind.lower()} JSON: {e}")
         raise ValueError(f"Invalid {kind.lower()} format")
@@ -667,14 +697,30 @@ def _load_signed_object(
         )
         raise ValueError(f"{kind} identity mismatch")
 
+    if approval_snapshots is not None and approved.approval is not None:
+        # Keep the revision used for this policy so callers can detect a
+        # concurrent change before releasing a secret or signing a certificate.
+        approval_snapshots.append(approved.approval)
     return obj
 
 
-def get_domain_policy(policy_store: PolicyStore, policy_id: str):
-    """Fetch and signature-verify a domain-policy by id from the policy store.
+def get_domain_policy(
+    policy_store: PolicyStore,
+    policy_id: str,
+    approval_snapshots: list[PolicyApproval] | None = None,
+):
+    """Fetch a domain-policy by ID and check its signature when required.
 
     Domain-policies live in the ``domain-policy`` namespace, separate from the
     secret-release ``policy`` namespace.
+
+    Parameters:
+        policy_store (PolicyStore): Policy store instance.
+        policy_id (str): The domain-policy ID to fetch.
+        approval_snapshots (list[PolicyApproval], optional): If provided,
+            receives the policy's approval snapshot after successful loading
+            and the configured signature checks, when the store supplies one.
+            None skips snapshot collection.
 
     Returns:
         dict: The domain-policy JSON.
@@ -685,19 +731,35 @@ def get_domain_policy(policy_store: PolicyStore, policy_id: str):
         PolicyStoreUnavailable: If the policy store is unreachable or fails.
     """
     return _load_signed_object(
-        policy_store, DOMAIN_POLICY_NAMESPACE, policy_id, "Domain policy"
+        policy_store,
+        DOMAIN_POLICY_NAMESPACE,
+        policy_id,
+        "Domain policy",
+        approval_snapshots,
     )
 
 
 get_domain_policy_from_redis = get_domain_policy
 
 
-def get_certify_policy(policy_store: PolicyStore, policy_id: str):
-    """Fetch and signature-verify a certify-policy by id from the policy store.
+def get_certify_policy(
+    policy_store: PolicyStore,
+    policy_id: str,
+    approval_snapshots: list[PolicyApproval] | None = None,
+):
+    """Fetch a certify-policy by ID and check its signature when required.
 
     Certify-policies share the structure of secret-release policies but live in
     the separate ``certify-policy`` namespace and are only used by the certify
     flow.
+
+    Parameters:
+        policy_store (PolicyStore): Policy store instance.
+        policy_id (str): The certify-policy ID to fetch.
+        approval_snapshots (list[PolicyApproval], optional): If provided,
+            receives the policy's approval snapshot after successful loading
+            and the configured signature checks, when the store supplies one.
+            None skips snapshot collection.
 
     Returns:
         tuple[dict, str | None]: The certify-policy JSON and its metadata key_id.
@@ -708,7 +770,11 @@ def get_certify_policy(policy_store: PolicyStore, policy_id: str):
         PolicyStoreUnavailable: If the policy store is unreachable or fails.
     """
     policy_json = _load_signed_object(
-        policy_store, CERTIFY_POLICY_NAMESPACE, policy_id, "Certify policy"
+        policy_store,
+        CERTIFY_POLICY_NAMESPACE,
+        policy_id,
+        "Certify policy",
+        approval_snapshots,
     )
     return policy_json, policy_json.get("metadata", {}).get("key_id")
 
@@ -946,6 +1012,7 @@ def vm_verify(
     wrapping_key=None,
     report_data_binding=False,
     gpu_list=None,
+    approval_snapshots: list[PolicyApproval] | None = None,
 ):
     """
     Fetches the verification policy by ID from the policy store, then delegates
@@ -954,13 +1021,27 @@ def vm_verify(
     Parameters:
         policy_store (PolicyStore): Policy store instance for policy retrieval.
         redis_client (redis.StrictRedis): Redis client instance for collateral caches.
-        policy_id (str): The policy ID to fetch from the policy store. All other
-            parameters are passed through unchanged to :func:`verify`.
+        nonce (str): The nonce to verify.
+        tee_type (str): The type of TEE (e.g., "amd-sev-snp", "intel-tdx").
+        tee_evidence (str): Base64-encoded TEE evidence.
+        policy_id (str): The policy ID to fetch from the policy store.
+        wrapping_key (bytes, optional): The wrapping key for report data binding.
+        report_data_binding (bool, optional): See :func:`verify`.
+        gpu_list (list, optional): See :func:`verify`.
+        approval_snapshots (list[PolicyApproval], optional): If provided,
+            receives the policy's approval snapshot, when available, only
+            after verification succeeds. When retrieving a secret under rollback
+            protection, provide a list and pass it to
+            ``policy_store.check_approvals`` immediately before retrieval.
+            None skips snapshot collection.
 
     Returns:
         is_verified (bool): True if verification is successful, False otherwise.
         key_id (str or None): The key ID to fetch if the policy used for verification is successful, None otherwise.
         verify_error (str or None): An error message if verification fails, None otherwise.
+
+    Raises:
+        PolicyStoreUnavailable: If policy access or an integrity check fails.
     """
     log_function_entry("vm_verify", nonce="***", tee_type=tee_type)
 
@@ -969,7 +1050,8 @@ def vm_verify(
         return False, None, input_error
 
     try:
-        policy_json, key_id = get_policy(policy_store, policy_id)
+        candidate_approvals: list[PolicyApproval] = []
+        policy_json, key_id = get_policy(policy_store, policy_id, candidate_approvals)
     except ValueError as e:
         logger.error(f"Policy fetching failed for: '{policy_id}': {e}")
         return False, None, str(e)
@@ -984,6 +1066,11 @@ def vm_verify(
         report_data_binding=report_data_binding,
         gpu_list=gpu_list,
     )
+    if verified and approval_snapshots is not None:
+        # Add the approval snapshot of the policy used for attestation, so that
+        # callers can check it is still current before, for example, releasing
+        # a secret.
+        approval_snapshots.extend(candidate_approvals)
     result = (verified, key_id if verified else None, verify_error)
     log_function_exit("vm_verify", result)
     return result
@@ -1441,6 +1528,7 @@ def domain_verify(
     wrapping_key=None,
     report_data_binding=False,
     gpu_list=None,
+    approval_snapshots: list[PolicyApproval] | None = None,
 ):
     """
     Verifies certify-flow attestation against a domain-policy by id.
@@ -1466,12 +1554,22 @@ def domain_verify(
         wrapping_key (bytes, optional): The wrapping key for report data binding.
         report_data_binding (bool, optional): See :func:`verify`.
         gpu_list (list, optional): See :func:`verify`.
+        approval_snapshots (list[PolicyApproval], optional): If provided,
+            receives available approvals for the domain-policy and the
+            successful certify-policy only after verification succeeds.
+            Failed candidates contribute no approvals. When signing a
+            certificate under rollback protection, provide a list and pass it
+            to ``policy_store.check_approvals`` immediately before signing.
+            None skips snapshot collection.
 
     Returns:
         is_verified (bool): True if the attestation satisfied one referenced
             certify-policy, False otherwise.
         key_id (str or None): The key ID of the satisfied certify-policy, or None.
         verify_error (str or None): An error message if verification fails, None otherwise.
+
+    Raises:
+        PolicyStoreUnavailable: If policy access or an integrity check fails.
     """
     log_function_entry("domain_verify", nonce="***", tee_type=tee_type)
 
@@ -1481,8 +1579,11 @@ def domain_verify(
         if gpu_input_error:
             return False, None, gpu_input_error
 
+    domain_approvals: list[PolicyApproval] = []
     try:
-        domain_policy = get_domain_policy(policy_store, domain_policy_id)
+        domain_policy = get_domain_policy(
+            policy_store, domain_policy_id, domain_approvals
+        )
     except ValueError as e:
         logger.error(f"Domain policy lookup failed for '{domain_policy_id}': {e}")
         return False, None, str(e)
@@ -1556,8 +1657,11 @@ def domain_verify(
     expected_policy_type = POLICY_TYPE_BY_TEE.get(tee_type)
     last_error = None
     for policy_id in candidate_policy_ids:
+        candidate_approvals: list[PolicyApproval] = []
         try:
-            policy_json, key_id = get_certify_policy(policy_store, policy_id)
+            policy_json, key_id = get_certify_policy(
+                policy_store, policy_id, candidate_approvals
+            )
         except ValueError as e:
             logger.warning(
                 f"Skipping certify policy '{policy_id}' for domain "
@@ -1594,6 +1698,11 @@ def domain_verify(
             gpu_results=gpu_results,
         )
         if verified:
+            if approval_snapshots is not None:
+                # The domain policy and this successful member jointly allowed
+                # the attestation; failed candidates must not authorize it.
+                approval_snapshots.extend(domain_approvals)
+                approval_snapshots.extend(candidate_approvals)
             logger.info(
                 f"Attestation satisfied certify policy '{policy_id}' for domain "
                 f"'{domain_policy_id}'"
