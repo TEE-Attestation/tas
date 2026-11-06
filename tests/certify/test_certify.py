@@ -378,6 +378,20 @@ def test_certify_rejects_invalid_csr_base64(test_client, bad_csr):
     assert response.json["error"] == "Invalid base64 encoding for CSR"
 
 
+@pytest.mark.parametrize("cn", ["---", "..a.."])
+def test_certify_rejects_malformed_dns_common_name(test_client, cn):
+    csr_bytes = generate_csr(cn=cn)
+    payload = build_certify_payload(
+        nonce="nonce-placeholder",
+        csr_b64=base64.b64encode(csr_bytes).decode("ascii"),
+    )
+
+    response = _post_certify(test_client, payload)
+
+    assert response.status_code == 400
+    assert "DNS-safe name" in response.json["error"]
+
+
 @pytest.mark.parametrize(
     "missing_field",
     ["tee-type", "nonce", "tee-evidence", "csr", "domain-policy"],
@@ -624,6 +638,7 @@ def _issue_leaf(
     dns_names=None,
     ip_addresses=None,
     email_addresses=None,
+    uri_sans=None,
 ):
     """Helper: drive a successful certify call and return the parsed JSON."""
     import tas.certify.routes as cert_routes
@@ -640,6 +655,7 @@ def _issue_leaf(
         dns_names=dns_names,
         ip_addresses=ip_addresses,
         email_addresses=email_addresses,
+        uri_sans=uri_sans,
     )
     csr_b64 = base64.b64encode(csr_bytes).decode("ascii")
     payload = build_certify_payload(nonce, csr_b64)
@@ -739,18 +755,51 @@ def test_certify_leaf_without_dns_is_spiffe_only(test_client, monkeypatch):
     assert san.value.get_values_for_type(x509.DNSName) == []
 
 
-def test_certify_drops_unsafe_csr_dns_sans(test_client, monkeypatch):
-    """Wildcard/IP-literal dNSName SANs in the CSR are dropped from the leaf."""
+@pytest.mark.parametrize(
+    ("san_kwargs", "san_type"),
+    [
+        ({"dns_names": ["ok.example.com", "*.bad.example.com"]}, "DNS"),
+        ({"dns_names": ["ok.example.com", "10.0.0.1"]}, "DNS"),
+        ({"email_addresses": ["ok@example.com", "bad@bad_domain"]}, "email"),
+    ],
+)
+def test_certify_rejects_csr_with_any_invalid_san(test_client, san_kwargs, san_type):
+    """One malformed SAN fails the request instead of issuing a partial leaf."""
+    csr_bytes = generate_csr(cn="filter-san.local", **san_kwargs)
+    payload = build_certify_payload(
+        nonce="nonce-placeholder",
+        csr_b64=base64.b64encode(csr_bytes).decode("ascii"),
+    )
+
+    response = _post_certify(test_client, payload)
+
+    assert response.status_code == 400
+    assert response.json["error"] == f"CSR contains an invalid {san_type} SAN entry"
+
+
+def test_certify_uses_generated_spiiffe_uri_and_accepts_64_character_cn(
+    test_client, monkeypatch
+):
+    cn = f"{'a' * 62}.b"
     result = _issue_leaf(
         test_client,
         monkeypatch,
-        cn="filter-dns.local",
-        dns_names=["*.bad.example.com", "10.0.0.1", "ok.example.com"],
+        cn=cn,
+        uri_sans=["spiffe://attacker.example/forged", "https://example.com/"],
     )
 
     leaf = x509.load_pem_x509_certificate(result["certificate"].encode("ascii"))
     san = leaf.extensions.get_extension_for_oid(ExtensionOID.SUBJECT_ALTERNATIVE_NAME)
-    assert san.value.get_values_for_type(x509.DNSName) == ["ok.example.com"]
+    uri_sans = san.value.get_values_for_type(x509.UniformResourceIdentifier)
+    common_name = leaf.subject.get_attributes_for_oid(NameOID.COMMON_NAME)[0].value
+
+    assert common_name == cn
+    assert len(uri_sans) == 1
+    assert uri_sans[0].startswith("spiffe://example.org/")
+    assert uri_sans[0] not in {
+        "spiffe://attacker.example/forged",
+        "https://example.com/",
+    }
 
 
 def test_certify_chain_verifies_with_openssl(test_client, monkeypatch):

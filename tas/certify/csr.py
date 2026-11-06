@@ -12,9 +12,10 @@
 
 import ipaddress
 import re
-from typing import Optional, Sequence
+from typing import NoReturn, Optional, Sequence
 
 from cryptography import x509
+from cryptography.exceptions import UnsupportedAlgorithm
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec, rsa
 from cryptography.x509.oid import ExtensionOID, NameOID
@@ -22,25 +23,39 @@ from cryptography.x509.oid import ExtensionOID, NameOID
 from ..tas_logging import get_logger
 
 # RFC 1035 / DNS-safe rough charset for CN: alphanumeric, dashes, dots.
-CN_CHARSET_RE = re.compile(r"^[a-zA-Z0-9.-]+$")
+CN_CHARSET_RE = re.compile(r"[a-zA-Z0-9.-]+")
 EMAIL_LOCAL_PART_RE = re.compile(r"^[a-zA-Z0-9._+-]+$")
 MAX_DNS_SAN_ENTRIES = 16
 MAX_IP_SAN_ENTRIES = 8
 MAX_EMAIL_SAN_ENTRIES = 8
-MAX_INVALID_SAN_DEBUG_LOGS = 3
 
 logger = get_logger(__name__)
 
 
-def _is_dns_safe(value: str) -> bool:
+def _reject_invalid_san(san_type: str, value: object) -> NoReturn:
+    """Reject the whole CSR because one SAN entry is malformed.
+
+    Issuing a certificate with a subset of the requested names would hide the
+    error from the caller and surface later as a confusing TLS failure, so any
+    invalid entry fails the request (matching SPIRE's InvalidArgument
+    behaviour). The raw value is attacker-controlled: it is kept out of the
+    exception text (which is returned to the HTTP client) and logged only at
+    debug level via repr() so embedded newlines cannot forge log lines.
+    """
+    logger.warning("Rejected CSR with invalid %s SAN entry", san_type)
+    logger.debug("Invalid %s SAN value: %r", san_type, value)
+    raise ValueError(f"CSR contains an invalid {san_type} SAN entry")
+
+
+def _is_dns_safe(value: str, *, max_length: int = 253) -> bool:
     """Return True if value is a DNS-safe hostname (RFC 1035 labels).
 
     Rejects empty strings, wildcards, IP literals, leading/trailing dots,
-    empty labels, labels longer than 63 chars, and names longer than 253 chars.
+    empty labels, labels longer than 63 chars, and names exceeding max_length.
     """
-    if not value or len(value) > 253:
+    if not value or len(value) > max_length:
         return False
-    if not CN_CHARSET_RE.match(value):
+    if CN_CHARSET_RE.fullmatch(value) is None:
         return False
     if value.startswith(".") or value.endswith("."):
         return False
@@ -101,11 +116,12 @@ def sanitize_csr(
 
     Returns:
         A tuple of (public_key, spki_der, subject_cn_or_none, dns_names,
-        ip_addresses, email_addresses). SAN lists are de-duplicated,
-        order-preserving, and contain only validated entries.
+        ip_addresses, email_addresses). SAN lists are de-duplicated and
+        order-preserving.
 
     Raises:
-        ValueError: If the CSR is malformed or violates policy constraints.
+        ValueError: If the CSR is malformed or violates policy constraints,
+            including when any DNS, IP, or email SAN entry is invalid.
     """
     if len(csr_bytes) > max_bytes:
         raise ValueError(f"CSR exceeds maximum allowed size of {max_bytes} bytes")
@@ -115,10 +131,14 @@ def sanitize_csr(
             csr = x509.load_pem_x509_csr(csr_bytes)
         else:
             csr = x509.load_der_x509_csr(csr_bytes)
-    except Exception as e:
-        raise ValueError(f"Failed to parse CSR: {e}")
+    except (ValueError, UnsupportedAlgorithm) as e:
+        raise ValueError(f"Failed to parse CSR: {e}") from e
 
-    if not csr.is_signature_valid:
+    try:
+        signature_valid = csr.is_signature_valid
+    except UnsupportedAlgorithm as e:
+        raise ValueError(f"CSR signature algorithm is not supported: {e}") from e
+    if not signature_valid:
         raise ValueError("CSR signature (proof of possession) is invalid")
 
     public_key = csr.public_key()
@@ -129,7 +149,9 @@ def sanitize_csr(
         if "RSA" in allowed_key_types and public_key.key_size >= 3072:
             is_valid_key = True
     elif isinstance(public_key, ec.EllipticCurvePublicKey):
-        if "EC" in allowed_key_types and public_key.key_size in (256, 384):
+        if "EC" in allowed_key_types and isinstance(
+            public_key.curve, (ec.SECP256R1, ec.SECP384R1)
+        ):
             is_valid_key = True
 
     if not is_valid_key:
@@ -150,14 +172,16 @@ def sanitize_csr(
         cn_value = cn_rdns[0].value
         if not isinstance(cn_value, str):
             raise ValueError("CSR Common Name must be a string")
-        if len(cn_value) > 63:
-            raise ValueError("CSR Common Name exceeds 63 characters")
+        if len(cn_value) > 64:
+            raise ValueError("CSR Common Name exceeds 64 characters")
         if "\0" in cn_value or not cn_value.isprintable():
             raise ValueError("CSR Common Name contains invalid characters")
-        if not CN_CHARSET_RE.match(cn_value):
+        if CN_CHARSET_RE.fullmatch(cn_value) is None:
             raise ValueError(
                 "CSR Common Name contains forbidden characters (only alphanumeric, dots, and hyphens allowed)"
             )
+        if not _is_dns_safe(cn_value, max_length=64):
+            raise ValueError("CSR Common Name is not a DNS-safe name")
         subject_cn = cn_value
 
     # Extract and sanitize supported SAN types (optional, classic-TLS support).
@@ -167,9 +191,6 @@ def sanitize_csr(
     seen_dns_names: set[str] = set()
     seen_ip_addresses: set[str] = set()
     seen_email_addresses: set[str] = set()
-    invalid_dns_values: list[str] = []
-    invalid_ip_values: list[str] = []
-    invalid_email_values: list[str] = []
     try:
         san_ext = csr.extensions.get_extension_for_oid(
             ExtensionOID.SUBJECT_ALTERNATIVE_NAME
@@ -181,12 +202,11 @@ def sanitize_csr(
             )
 
         for dns_value in dns_values:
-            if isinstance(dns_value, str) and _is_dns_safe(dns_value):
-                if dns_value not in seen_dns_names:
-                    seen_dns_names.add(dns_value)
-                    dns_names.append(dns_value)
-            else:
-                invalid_dns_values.append(str(dns_value))
+            if not (isinstance(dns_value, str) and _is_dns_safe(dns_value)):
+                _reject_invalid_san("DNS", dns_value)
+            if dns_value not in seen_dns_names:
+                seen_dns_names.add(dns_value)
+                dns_names.append(dns_value)
 
         ip_values = san_ext.value.get_values_for_type(x509.IPAddress)
         if len(ip_values) > MAX_IP_SAN_ENTRIES:
@@ -197,8 +217,8 @@ def sanitize_csr(
         for ip_value in ip_values:
             normalized_ip = _normalize_ip(ip_value)
             if normalized_ip is None:
-                invalid_ip_values.append(str(ip_value))
-            elif normalized_ip not in seen_ip_addresses:
+                _reject_invalid_san("IP", ip_value)
+            if normalized_ip not in seen_ip_addresses:
                 seen_ip_addresses.add(normalized_ip)
                 ip_addresses.append(normalized_ip)
 
@@ -209,26 +229,13 @@ def sanitize_csr(
             )
 
         for email_value in email_values:
-            if isinstance(email_value, str) and _is_email_safe(email_value):
-                if email_value not in seen_email_addresses:
-                    seen_email_addresses.add(email_value)
-                    email_addresses.append(email_value)
-            else:
-                invalid_email_values.append(str(email_value))
+            if not (isinstance(email_value, str) and _is_email_safe(email_value)):
+                _reject_invalid_san("email", email_value)
+            if email_value not in seen_email_addresses:
+                seen_email_addresses.add(email_value)
+                email_addresses.append(email_value)
     except x509.ExtensionNotFound:
         pass
-
-    for san_type, invalid_values in (
-        ("DNS", invalid_dns_values),
-        ("IP", invalid_ip_values),
-        ("email", invalid_email_values),
-    ):
-        if invalid_values:
-            logger.warning(
-                "Dropped %d invalid %s SAN entries", len(invalid_values), san_type
-            )
-            for value in invalid_values[:MAX_INVALID_SAN_DEBUG_LOGS]:
-                logger.debug("Dropped invalid %s SAN value: %s", san_type, value)
 
     return (
         public_key,
