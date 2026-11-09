@@ -920,12 +920,17 @@ class TestServerWorkerReliabilityMatrix:
                 assert del_codes.count(404) == len(batch_ids)
 
                 if server_kind == "gunicorn" and workers > 1:
-                    for _ in range(10):
-                        current_served = set(
-                            re.findall(r"WORKER=(<\d+>|[^\s]+)", access_log.read_text())
+                    current_served = {
+                        pid.strip("<>")
+                        for pid in re.findall(
+                            r"WORKER=(<\d+>|[^\s]+)", access_log.read_text()
                         )
-                        if len(current_served) >= workers:
-                            break
+                    }
+                    probe_deadline = time.monotonic() + 5
+                    while (
+                        len(current_served) < workers
+                        and time.monotonic() < probe_deadline
+                    ):
                         fanout = workers * 4
                         fanout_barrier = threading.Barrier(fanout)
 
@@ -938,6 +943,12 @@ class TestServerWorkerReliabilityMatrix:
                                 pool.map(lambda _: _status_probe(), range(fanout))
                             )
                         assert probe_codes == [200] * fanout
+                        current_served = {
+                            pid.strip("<>")
+                            for pid in re.findall(
+                                r"WORKER=(<\d+>|[^\s]+)", access_log.read_text()
+                            )
+                        }
             finally:
                 _stop_process_and_collect(proc)
 
@@ -945,8 +956,12 @@ class TestServerWorkerReliabilityMatrix:
             booted_pids = set(
                 re.findall(r"Booting worker with pid: (\d+)", server_log.read_text())
             )
-            served_pids = set(
-                re.findall(r"WORKER=(<\d+>|[^\s]+)", access_log.read_text())
-            )
+            served_pids = {
+                pid.strip("<>")
+                for pid in re.findall(r"WORKER=(<\d+>|[^\s]+)", access_log.read_text())
+            }
             assert len(booted_pids) == workers
-            assert len(served_pids) == workers
+            assert served_pids == booted_pids, (
+                f"Gunicorn workers did not all serve requests: "
+                f"booted={sorted(booted_pids)}, served={sorted(served_pids)}"
+            )
