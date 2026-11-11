@@ -254,10 +254,85 @@ class TestPolicyStoreCodebaseConsumers:
             json.dumps(_sample_domain_policy("unsigned-dom", ["unsigned-cert"])),
         )
 
+        # Identity binding: a validly signed policy copied to another id's key.
+        # The signature proves integrity, not identity, so metadata.policy_id
+        # (inside the signed envelope) must match the id fetched.
+        permissive_sec = _sign_policy_doc(
+            _sample_secret_policy("permissive-sec", key_id="permissive-k"), priv_key
+        )
+        store.create(POLICY_NAMESPACE, "strict-sec", json.dumps(permissive_sec))
+        store.create(
+            CERTIFY_POLICY_NAMESPACE,
+            "strict-cert",
+            json.dumps(
+                _sign_policy_doc(_sample_certify_policy("permissive-cert"), priv_key)
+            ),
+        )
+        store.create(
+            DOMAIN_POLICY_NAMESPACE,
+            "strict-dom",
+            json.dumps(
+                _sign_policy_doc(
+                    _sample_domain_policy("permissive-dom", ["x"]), priv_key
+                )
+            ),
+        )
+        # Forging the id after signing must trip the signature check first.
+        forged_sec = json.loads(json.dumps(permissive_sec))
+        forged_sec["metadata"]["policy_id"] = "forged-sec"
+        store.create(POLICY_NAMESPACE, "forged-sec", json.dumps(forged_sec))
+        # A document with no declared id can never match.
+        no_id_sec = _sample_secret_policy("no-id-sec", key_id="k")
+        del no_id_sec["metadata"]["policy_id"]
+        store.create(
+            POLICY_NAMESPACE,
+            "no-id-sec",
+            json.dumps(_sign_policy_doc(no_id_sec, priv_key)),
+        )
+        # Case differs: ids are compared exactly.
+        store.create(
+            POLICY_NAMESPACE,
+            "case-sec",
+            json.dumps(
+                _sign_policy_doc(
+                    _sample_secret_policy("Case-Sec", key_id="k"), priv_key
+                )
+            ),
+        )
+        # Control: a correctly stored signed policy loads.
+        store.create(
+            POLICY_NAMESPACE,
+            "good-sec",
+            json.dumps(
+                _sign_policy_doc(
+                    _sample_secret_policy("good-sec", key_id="good-k"), priv_key
+                )
+            ),
+        )
+
         enforced_app = _make_full_test_app(
             store, fake_redis, enforce_signed=True, trusted_keys=trusted_keys
         )
         with enforced_app.app_context():
+            good_obj, good_key = tas_vm.get_policy(store, "good-sec")
+            assert good_obj["metadata"]["policy_id"] == "good-sec"
+            assert good_key == "good-k"
+
+            with pytest.raises(ValueError, match="Policy identity mismatch"):
+                tas_vm.get_policy(store, "strict-sec")
+            with pytest.raises(ValueError, match="Certify policy identity mismatch"):
+                tas_vm.get_certify_policy(store, "strict-cert")
+            with pytest.raises(ValueError, match="Domain policy identity mismatch"):
+                tas_vm.get_domain_policy(store, "strict-dom")
+            with pytest.raises(ValueError, match="Policy identity mismatch"):
+                tas_vm.get_policy(store, "no-id-sec")
+            with pytest.raises(ValueError, match="Policy identity mismatch"):
+                tas_vm.get_policy(store, "case-sec")
+            with pytest.raises(
+                ValueError, match="Policy signature verification failed"
+            ):
+                tas_vm.get_policy(store, "forged-sec")
+
             with pytest.raises(ValueError, match="Policy not found"):
                 tas_vm.get_policy(store, "missing-sec")
             with pytest.raises(ValueError, match="Certify policy not found"):
@@ -298,6 +373,13 @@ class TestPolicyStoreCodebaseConsumers:
 
             dom_obj = tas_vm.get_domain_policy_from_redis(store, "unsigned-dom")
             assert dom_obj["metadata"]["policy_id"] == "unsigned-dom"
+
+            # Identity binding is structural, not cryptographic: it still
+            # applies when signature enforcement is disabled.
+            with pytest.raises(ValueError, match="Policy identity mismatch"):
+                tas_vm.get_policy(store, "strict-sec")
+            with pytest.raises(ValueError, match="Domain policy identity mismatch"):
+                tas_vm.get_domain_policy(store, "strict-dom")
 
     def test_vm_verify_and_domain_verify_integration_with_policy_store(
         self, backend_env, monkeypatch
