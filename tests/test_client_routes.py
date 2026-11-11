@@ -361,7 +361,10 @@ def test_combined_policy_controls_secret_release(app, client, failure):
         },
     }
     policy = {
-        "metadata": {"key_id": "combined-policy-secret"},
+        "metadata": {
+            "policy_id": "combined-policy",
+            "key_id": "combined-policy-secret",
+        },
         "validation_rules": {},
         "components": {"gpu": {"gpu-nvidia": gpu_policy}},
     }
@@ -439,7 +442,10 @@ def test_secret_checks_report_data_binding(app, client, report_binding):
     body["tee-evidence"] = base64.b64encode(report_data).decode()
     app.config["TAS_ENFORCE_SIGNED_POLICIES"] = False
     app.extensions["policy_store"].get.return_value = json.dumps(
-        {"metadata": {"key_id": "bound-secret"}, "validation_rules": {}}
+        {
+            "metadata": {"policy_id": "policy:test", "key_id": "bound-secret"},
+            "validation_rules": {},
+        }
     )
     app.extensions["kbm_get_secret"].return_value = "wrapped-bound-secret"
 
@@ -489,7 +495,10 @@ def test_secret_accepts_quoted_agent_nonce_and_binds_unquoted(app, client):
     redis_client = app.extensions["redis"]
     redis_client.getdel.return_value = "1"
     app.extensions["policy_store"].get.return_value = json.dumps(
-        {"metadata": {"key_id": "bound-secret"}, "validation_rules": {}}
+        {
+            "metadata": {"policy_id": "policy:test", "key_id": "bound-secret"},
+            "validation_rules": {},
+        }
     )
     app.extensions["kbm_get_secret"].return_value = "wrapped-bound-secret"
 

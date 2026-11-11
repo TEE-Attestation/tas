@@ -265,6 +265,12 @@ Before signing or verifying, TAS canonicalizes the policy JSON using [RFC 8785 (
 
 The signature covers **all top-level fields** in the policy (metadata, validation_rules, etc.) except the `signature` field itself. This means any change to the policy will invalidate the signature.
 
+### Identity Binding
+
+A valid signature proves a policy is untampered and was issued by a trusted author; it does not by itself prove it is the policy that was *requested*. TAS therefore binds every fetched policy to the id it was looked up under: after signature verification, `metadata.policy_id` (which is inside the signed envelope) must exactly equal the requested id, or the policy is rejected with an identity mismatch. This applies to secret-release policies, certify-policies and domain-policies alike, and is enforced even when `TAS_ENFORCE_SIGNED_POLICIES` is `false`.
+
+Without this binding, anyone able to write to the policy store — but without the signing key — could copy a validly signed permissive policy over the key of a stricter one and have it accepted.
+
 > **Note:** Policies must be signed using RFC 8785 canonicalization. Any custom signing tool must canonicalize the policy to be signed with JCS before signing.
 
 ### Step 1: Use TAS Demo Signer

@@ -612,7 +612,8 @@ def _load_signed_object(
 
     Raises:
         ValueError: If the object is missing, invalid JSON, unsigned when
-            signing is required, or fails signature verification.
+            signing is required, fails signature verification, or declares a
+            ``metadata.policy_id`` other than the one it was fetched under.
         PolicyStoreUnavailable: If the policy store is unreachable or fails.
     """
     qualified_key = f"{namespace}:{policy_id}"
@@ -649,6 +650,22 @@ def _load_signed_object(
             logger.error(f"{kind} signature verification failed for: '{qualified_key}'")
             raise ValueError(f"{kind} signature verification failed")
         logger.info(f"{kind} signature verification successful for: '{qualified_key}'")
+
+    # Bind the object to the key it was fetched under. metadata.policy_id is
+    # inside the signed envelope, so after signature verification it is the
+    # author's statement of which policy this is. Without this check a valid,
+    # untampered policy stored under a different key would be accepted.
+    stored_id = (
+        obj.get("metadata", {}).get("policy_id")
+        if isinstance(obj.get("metadata"), dict)
+        else None
+    )
+    if stored_id != policy_id:
+        logger.error(
+            f"{kind} identity mismatch: fetched '{qualified_key}' but the "
+            f"document declares policy_id {stored_id!r}"
+        )
+        raise ValueError(f"{kind} identity mismatch")
 
     return obj
 
