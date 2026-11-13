@@ -184,6 +184,12 @@ def get_secret():
     # store for policy lookup and primary Redis for cert and collateral caching
     policy_store = get_policy_store()
     redis_client = get_redis()
+    # vm_verify fills this list with the approval snapshot of the policy used
+    # for attestation. Each snapshot is a PolicyApproval holding the policy
+    # namespace, policy ID and the etcd revision of its approval record, e.g.
+    # PolicyApproval("policy", "policy-1", 42). The list stays empty when
+    # rollback protection is off.
+    approval_snapshots = []
     logger.info(f"Starting TEE verification for type: {tee_type}")
     is_verified, key_id, verify_error = vm_verify(
         policy_store,
@@ -195,10 +201,14 @@ def get_secret():
         wrapping_key=wrapping_key,
         report_data_binding=True,
         gpu_list=gpu_list,
+        approval_snapshots=approval_snapshots,
     )
     if not is_verified:
         logger.error(f"TEE verification failed: {verify_error}")
         return jsonify({"error": "TEE verification failed"}), 400
+
+    # Refuse the release if the policy changed while attestation was running.
+    policy_store.check_approvals(approval_snapshots)
 
     # Retrieve the secret from the KMIP Broker Module
     logger.info(f"Retrieving secret for key ID: {key_id}")

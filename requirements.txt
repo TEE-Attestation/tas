@@ -6,6 +6,7 @@ Flask-Limiter[redis]>=3.0.0
 gunicorn>=20.0.0
 psycopg[binary]>=3.2
 redis>=4.0.0
+requests>=2.31,<3
 hexdump>=3.0
 PyYAML>=5.4.0
 pytest>=6.0.0

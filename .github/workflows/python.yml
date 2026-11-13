@@ -63,6 +63,7 @@ jobs:
           cd tdx_pytools && pip install . && cd ..
           git clone https://github.com/TEE-Attestation/nvidia_pytools.git
           cd nvidia_pytools && pip install . && cd ..
+          # Install the dependencies shared by TAS and its plugins.
           pip install -r requirements.txt
           pip install pytest pytest-cov
 
@@ -71,6 +72,26 @@ jobs:
 
       - name: Unit tests
         run: python -m pytest tests/ -v
+
+      - name: Policy rollback tests (real etcd, PostgreSQL, Redis and gunicorn TAS)
+        if: matrix.python-version == '3.14'
+        env:
+          TAS_RUN_ETCD_INTEGRATION: "1"
+        run: |
+          ETCD_VERSION=v3.7.3
+          ETCD_SHA256=5dfa9cc3b3ce3b4b491fbcc2057d3daa166bcc6676f743fcd20f8e5760cb9775
+          ETCD_DIR="$RUNNER_TEMP/tas-etcd"
+          mkdir -p "$ETCD_DIR"
+          curl --fail --location --retry 2 \
+            "https://github.com/etcd-io/etcd/releases/download/$ETCD_VERSION/etcd-$ETCD_VERSION-linux-amd64.tar.gz" \
+            --output "$ETCD_DIR/etcd.tar.gz"
+          echo "$ETCD_SHA256  $ETCD_DIR/etcd.tar.gz" | sha256sum --check -
+          tar -xzf "$ETCD_DIR/etcd.tar.gz" --directory "$ETCD_DIR" --strip-components=1 \
+            "etcd-$ETCD_VERSION-linux-amd64/etcd" \
+            "etcd-$ETCD_VERSION-linux-amd64/etcdctl" \
+            "etcd-$ETCD_VERSION-linux-amd64/etcdutl"
+          export PATH="$ETCD_DIR:$PATH"
+          python -m pytest tests/test_policy_rollback_integration.py -v
 
       - name: Test demo signer
         run: |

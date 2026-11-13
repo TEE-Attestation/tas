@@ -15,6 +15,7 @@ import json
 
 # config_loader.py
 import os
+import re
 from typing import Any, Dict
 
 import yaml
@@ -39,6 +40,15 @@ KNOWN_TAS_KEYS = {
     "TAS_REDIS_PASSWORD",
     "TAS_REDIS_PERSISTENCE",
     "TAS_POLICY_BACKEND",
+    "TAS_POLICY_AUTHORIZATION",
+    "TAS_POLICY_OPERATION_TIMEOUT_SECONDS",
+    "TAS_ETCD_ENDPOINTS",
+    "TAS_ETCD_CA_FILE",
+    "TAS_ETCD_USERNAME",
+    "TAS_ETCD_PASSWORD",
+    "TAS_ETCD_CERT_FILE",
+    "TAS_ETCD_KEY_FILE",
+    "TAS_ETCD_TIMEOUT_SECONDS",
     "TAS_POSTGRES_DSN",
     "TAS_POSTGRES_CONNECT_TIMEOUT_SECONDS",
     "TAS_POSTGRES_STATEMENT_TIMEOUT_SECONDS",
@@ -72,6 +82,67 @@ KNOWN_TAS_KEYS = {
 }
 
 
+# Log redaction for configuration values.
+#
+# The loader logs every override it applies at debug level so operators can
+# see where a setting came from. Those logs must never contain secrets, so
+# every override log line goes through _redact_config_value():
+#
+#   key is listed in _SENSITIVE_CONFIG_KEYS ─┐
+#   key contains a _SENSITIVE_KEY_MARKERS ───┼──> "***"
+#                                            │
+#   otherwise, value is a URI with userinfo ─┴──> scheme://***@host/...
+#   otherwise ──────────────────────────────────> value unchanged
+#
+# The explicit set covers known TAS secrets whose names do not contain a
+# marker (DSNs and URIs embed credentials). The markers catch secrets that
+# arrive through the open-ended FLASK_* and TAS_OVERRIDE__* paths, such as
+# FLASK_SECRET_KEY or TAS_OVERRIDE__KBM__PASSWORD. Note that "KEY" alone is
+# deliberately not a marker: TAS_ETCD_KEY_FILE is a path, not a secret.
+_SENSITIVE_CONFIG_KEYS = frozenset(
+    {
+        "TAS_REDIS_PASSWORD",
+        "TAS_API_KEY",
+        "TAS_MANAGEMENT_API_KEY",
+        "TAS_EPHEMERAL_REDIS_URI",
+        "TAS_EPHEMERAL_REDIS_PASSWORD",
+        "TAS_POSTGRES_DSN",
+        "TAS_ETCD_PASSWORD",
+        "RATELIMIT_STORAGE_URI",
+    }
+)
+_SENSITIVE_KEY_MARKERS = (
+    "PASSWORD",
+    "PASSWD",
+    "SECRET",
+    "TOKEN",
+    "API_KEY",
+    "APIKEY",
+    "PRIVATE_KEY",
+    "CREDENTIAL",
+    "DSN",
+)
+# scheme://user:password@host -> captures "scheme://" and "@host..."
+_URI_USERINFO_RE = re.compile(r"([A-Za-z][A-Za-z0-9+.\-]*://)[^/@\s]+@")
+
+
+def is_sensitive_config_key(key: str) -> bool:
+    """Return True if the value of config key ``key`` must not be logged."""
+    upper = key.upper()
+    if upper in _SENSITIVE_CONFIG_KEYS:
+        return True
+    return any(marker in upper for marker in _SENSITIVE_KEY_MARKERS)
+
+
+def _redact_config_value(key: str, value: Any) -> Any:
+    """Return a log-safe representation of a config value."""
+    if is_sensitive_config_key(key):
+        return "***"
+    if isinstance(value, str):
+        return _URI_USERINFO_RE.sub(r"\1***@", value)
+    return value
+
+
 def _coerce(val: str):
     # Try JSON first
     try:
@@ -97,7 +168,9 @@ def apply_flask_env_overrides(app):
         cfg_key = k[len("FLASK_") :]
         if cfg_key:  # ignore empty
             app.config[cfg_key] = _coerce(v.strip())
-            flask_overrides.append(f"{cfg_key}={app.config[cfg_key]}")
+            flask_overrides.append(
+                f"{cfg_key}={_redact_config_value(cfg_key, app.config[cfg_key])}"
+            )
 
     if flask_overrides:
         logger.debug(
@@ -231,22 +304,13 @@ def _load_trusted_keys(path: str):
 
 def apply_tas_env_overrides(app):
     # Direct overrides (exact match)
-    _SENSITIVE_KEYS = {
-        "TAS_REDIS_PASSWORD",
-        "TAS_API_KEY",
-        "TAS_MANAGEMENT_API_KEY",
-        "TAS_EPHEMERAL_REDIS_URI",
-        "TAS_EPHEMERAL_REDIS_PASSWORD",
-        "TAS_POSTGRES_DSN",
-    }
     direct_overrides = []
     for key in KNOWN_TAS_KEYS:
         if key in os.environ:
             app.config[key] = _coerce(os.environ[key])
-            if key in _SENSITIVE_KEYS:
-                direct_overrides.append(f"{key}=***")
-            else:
-                direct_overrides.append(f"{key}={app.config[key]}")
+            direct_overrides.append(
+                f"{key}={_redact_config_value(key, app.config[key])}"
+            )
 
     if direct_overrides:
         logger.debug(
@@ -266,8 +330,11 @@ def apply_tas_env_overrides(app):
             cursor = cursor.setdefault(part.lower(), {})
         leaf = parts[-1].lower()
         cursor[leaf] = _coerce(raw_v.strip())
+        # Judge sensitivity on the full env var name so a secret anywhere in
+        # the path (for example TAS_OVERRIDE__KBM__PASSWORD) is masked.
         nested_overrides.append(
-            f"TAS.{'.'.join(p.lower() for p in parts)}={cursor[leaf]}"
+            f"TAS.{'.'.join(p.lower() for p in parts)}="
+            f"{_redact_config_value(raw_k, cursor[leaf])}"
         )
 
     if nested_overrides:
@@ -392,6 +459,44 @@ def load_configuration(app):
             )
             raise RuntimeError(
                 "TAS_POSTGRES_DSN is required when TAS_POLICY_BACKEND='postgresql'"
+            )
+
+    authorization_mode = app.config.get("TAS_POLICY_AUTHORIZATION", "none")
+    if authorization_mode not in ("none", "etcd"):
+        raise RuntimeError("TAS_POLICY_AUTHORIZATION must be 'none' or 'etcd'")
+    if authorization_mode == "etcd":
+        for key in (
+            "TAS_ETCD_TIMEOUT_SECONDS",
+            "TAS_POLICY_OPERATION_TIMEOUT_SECONDS",
+        ):
+            timeout = app.config.get(key)
+            if isinstance(timeout, bool) or not isinstance(timeout, int) or timeout < 1:
+                raise RuntimeError(f"{key} must be a positive integer")
+        if (
+            app.config["TAS_ETCD_TIMEOUT_SECONDS"]
+            > app.config["TAS_POLICY_OPERATION_TIMEOUT_SECONDS"]
+        ):
+            raise RuntimeError(
+                "TAS_ETCD_TIMEOUT_SECONDS must not exceed "
+                "TAS_POLICY_OPERATION_TIMEOUT_SECONDS"
+            )
+        client_cert = app.config.get("TAS_ETCD_CERT_FILE", "")
+        client_key = app.config.get("TAS_ETCD_KEY_FILE", "")
+        if bool(client_cert) != bool(client_key):
+            raise RuntimeError(
+                "TAS_ETCD_CERT_FILE and TAS_ETCD_KEY_FILE must be configured together"
+            )
+        required_etcd_settings = (
+            "TAS_ETCD_ENDPOINTS",
+            "TAS_ETCD_CA_FILE",
+            "TAS_ETCD_USERNAME",
+            "TAS_ETCD_PASSWORD",
+        )
+        missing = [key for key in required_etcd_settings if not app.config.get(key)]
+        if missing:
+            raise RuntimeError(
+                "Missing etcd settings for TAS_POLICY_AUTHORIZATION=etcd: "
+                + ", ".join(missing)
             )
 
     for key in (

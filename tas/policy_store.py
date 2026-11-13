@@ -12,7 +12,8 @@
 
 from abc import ABC, abstractmethod
 from collections.abc import Generator
-from typing import Optional
+from dataclasses import dataclass
+from typing import Optional, Sequence
 
 from .tas_logging import get_logger
 
@@ -54,8 +55,28 @@ class PolicyStoreUnavailable(PolicyStoreError):
 
     public_message = "Policy store is unavailable"
 
-    def __init__(self, message: Optional[str] = None):
+    def __init__(
+        self, message: Optional[str] = None, *, reason_code: str = "store_unavailable"
+    ):
+        self.reason_code = reason_code
         super().__init__(message or self.public_message)
+
+
+class PolicyAuthorizationDenied(PolicyStoreError):
+    """Raised when an approval changed before the final authorization check."""
+
+
+@dataclass(frozen=True)
+class PolicyApproval:
+    namespace: str
+    policy_id: str
+    revision: int
+
+
+@dataclass(frozen=True)
+class ApprovedPolicy:
+    document: str
+    approval: Optional[PolicyApproval] = None
 
 
 def validate_policy_namespace(namespace: str) -> None:
@@ -108,6 +129,16 @@ class PolicyStore(ABC):
     @abstractmethod
     def is_reachable(self) -> bool:
         """Return True if the policy store responds to a live connectivity check."""
+
+    def load_approved(self, namespace: str, policy_id: str) -> ApprovedPolicy | None:
+        """Load a policy and its approval revision when the backend has one."""
+        document = self.get(namespace, policy_id)
+        if document is None:
+            return None
+        return ApprovedPolicy(document)
+
+    def check_approvals(self, approvals: Sequence[PolicyApproval]) -> None:
+        """Check approval revisions immediately before a protected operation."""
 
 
 class RedisPolicyStore(PolicyStore):
@@ -205,13 +236,12 @@ def init_policy_store(app, redis_client) -> PolicyStore:
     never used for policy operations.
     """
     backend = app.config.get("TAS_POLICY_BACKEND", "redis")
+    authorization_mode = app.config.get("TAS_POLICY_AUTHORIZATION", "none")
+    if authorization_mode not in ("none", "etcd"):
+        raise RuntimeError("TAS_POLICY_AUTHORIZATION must be 'none' or 'etcd'")
     if backend == "redis":
         policy_store: PolicyStore = RedisPolicyStore(redis_client)
-        app.extensions["policy_store"] = policy_store
-        logger.info("Policy storage backend initialized: redis")
-        return policy_store
-
-    if backend == "postgresql":
+    elif backend == "postgresql":
         dsn = app.config.get("TAS_POSTGRES_DSN", "")
         if not isinstance(dsn, str) or not dsn.strip():
             raise RuntimeError(
@@ -235,10 +265,58 @@ def init_policy_store(app, redis_client) -> PolicyStore:
             ),
         )
         policy_store.verify_schema()
-        app.extensions["policy_store"] = policy_store
-        logger.info("Policy storage backend initialized: postgresql")
-        return policy_store
+    else:
+        raise RuntimeError(
+            f"Unsupported TAS_POLICY_BACKEND={backend!r}; expected 'redis' or 'postgresql'"
+        )
 
-    raise RuntimeError(
-        f"Unsupported TAS_POLICY_BACKEND={backend!r}; expected 'redis' or 'postgresql'"
-    )
+    if authorization_mode == "etcd":
+        from .etcd_client import EtcdClient
+        from .etcd_protected_policy_store import EtcdProtectedPolicyStore
+
+        etcd = EtcdClient(
+            app.config["TAS_ETCD_ENDPOINTS"],
+            ca_file=app.config["TAS_ETCD_CA_FILE"],
+            username=app.config["TAS_ETCD_USERNAME"],
+            password=app.config["TAS_ETCD_PASSWORD"],
+            timeout_seconds=app.config.get("TAS_ETCD_TIMEOUT_SECONDS", 5),
+            cert_file=app.config.get("TAS_ETCD_CERT_FILE") or None,
+            key_file=app.config.get("TAS_ETCD_KEY_FILE") or None,
+        )
+        if backend == "redis":
+            from .redis_publication_store import RedisPublicationStore
+
+            publications = RedisPublicationStore(redis_client)
+        else:
+            from .postgres_publication_store import PostgresPublicationStore
+
+            publications = PostgresPublicationStore(
+                app.config["TAS_POSTGRES_DSN"],
+                connect_timeout=app.config.get(
+                    "TAS_POSTGRES_CONNECT_TIMEOUT_SECONDS",
+                    5,
+                ),
+                statement_timeout_seconds=app.config.get(
+                    "TAS_POSTGRES_STATEMENT_TIMEOUT_SECONDS",
+                    5,
+                ),
+            )
+            publications.verify_schema()
+        policy_store = EtcdProtectedPolicyStore(
+            etcd,
+            publications,
+            unprotected_policy_store=policy_store,
+            operation_timeout_seconds=app.config.get(
+                "TAS_POLICY_OPERATION_TIMEOUT_SECONDS", 20
+            ),
+        )
+        logger.info(
+            "Policy rollback protection enabled with etcd; document backend: %s",
+            backend,
+        )
+    else:
+        logger.info("Policy storage backend initialized: %s", backend)
+
+    app.config["TAS_POLICY_AUTHORIZATION"] = authorization_mode
+    app.extensions["policy_store"] = policy_store
+    return policy_store

@@ -9,13 +9,15 @@
 
 import json
 import os
+from unittest.mock import MagicMock
 
 import pytest
 from flask import Flask
 
 from tas.auth import init_client_auth, init_management_auth
+from tas.error_handlers import register_error_handlers
 from tas.management_routes import management_bp
-from tas.policy_store import RedisPolicyStore
+from tas.policy_store import PolicyStore, PolicyStoreUnavailable, RedisPolicyStore
 
 CLIENT_API_KEY = "a" * 64
 MGMT_API_KEY = "b" * 64
@@ -398,11 +400,29 @@ class TestStatusEndpoint:
         )
         assert resp.status_code == 200
         data = resp.get_json()
+        assert data["policy_authorization"] == "none"
         assert "redis_persistence_active" in data
         assert "config_rewrite_succeeded" in data
         assert data["policy_storage"] == {
             "backend": "redis",
             "reachable": True,
+        }
+
+    def test_protected_store_outage_returns_503(self, app, client, mgmt_headers):
+        app.config["TAS_POLICY_AUTHORIZATION"] = "etcd"
+        policy_store = MagicMock(spec=PolicyStore)
+        policy_store.list.side_effect = PolicyStoreUnavailable(
+            "etcd unavailable", reason_code="authority_unavailable"
+        )
+        app.extensions["policy_store"] = policy_store
+        register_error_handlers(app)
+
+        resp = client.get("/management/policy/v0/list", headers=mgmt_headers)
+
+        assert resp.status_code == 503
+        assert resp.get_json() == {
+            "error": "etcd unavailable",
+            "reason": "authority_unavailable",
         }
 
     def test_status_reflects_config_rewrite_ok(self, app, client):
