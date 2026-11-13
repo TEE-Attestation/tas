@@ -17,7 +17,20 @@ import pytest
 from tas.tas_vm import gpu_vm_verify, verify, vm_verify
 
 # A minimal valid policy JSON for mocking get_policy_from_redis
-_MOCK_POLICY = {"metadata": {"key_id": "test-key"}, "validation_rules": {}}
+_MOCK_POLICY = {
+    "metadata": {"policy_type": "SEV", "key_id": "test-key"},
+    "validation_rules": {},
+}
+
+
+def _for_tee(policy, tee_type):
+    """Return a copy of ``policy`` whose policy_type matches ``tee_type``."""
+    from tas.policy_helper import POLICY_TYPE_BY_TEE
+
+    copy = json.loads(json.dumps(policy))
+    copy.setdefault("metadata", {})["policy_type"] = POLICY_TYPE_BY_TEE[tee_type]
+    return copy
+
 
 # ── gpu_vm_verify tests ─────────────────────────────────────────────
 
@@ -252,6 +265,10 @@ class TestVmVerifyReportDataBinding:
     @patch("tas.tas_vm.tdx_vm_verify")
     def test_binding_dispatches_to_tdx(self, mock_tdx, _mock_policy):
         """Binding should work for intel-tdx as well."""
+        _mock_policy.return_value = (
+            _for_tee(_MOCK_POLICY, "intel-tdx"),
+            _mock_policy.return_value[1],
+        )
         mock_tdx.return_value = (True, None)
 
         vm_verify(
@@ -321,6 +338,10 @@ class TestVmVerifyReturnPropagation:
     @patch("tas.tas_vm.tdx_vm_verify")
     def test_tdx_success_propagated(self, mock_tdx, _mock_policy):
         """vm_verify should return (True, key_id, None) when tdx_vm_verify succeeds."""
+        _mock_policy.return_value = (
+            _for_tee(_MOCK_POLICY, "intel-tdx"),
+            _mock_policy.return_value[1],
+        )
         mock_tdx.return_value = (True, None)
         ok, key_id, err = vm_verify(
             MagicMock(),
@@ -337,6 +358,10 @@ class TestVmVerifyReturnPropagation:
     @patch("tas.tas_vm.tdx_vm_verify")
     def test_tdx_failure_propagated(self, mock_tdx, _mock_policy):
         """vm_verify should return (False, None, error) when tdx_vm_verify fails."""
+        _mock_policy.return_value = (
+            _for_tee(_MOCK_POLICY, "intel-tdx"),
+            _mock_policy.return_value[1],
+        )
         mock_tdx.return_value = (False, "TDX verification failed")
         ok, key_id, err = vm_verify(
             MagicMock(),
@@ -349,6 +374,136 @@ class TestVmVerifyReturnPropagation:
         assert ok is False
         assert key_id is None
         assert err == "TDX verification failed"
+
+
+# ── vm_verify policy type / TEE type binding ────────────────────────
+
+
+class TestVmVerifyPolicyTypeBinding:
+    """A directly requested policy must be written for the TEE that produced
+    the evidence. The certify flow has always skipped mis-typed domain members;
+    the secret-release flow now hard-fails on the same condition.
+
+    Regression tests: vm_verify previously never read policy_type, so a TDX
+    policy could be evaluated against SEV-SNP evidence (and vice versa). Most
+    such evaluations fail on missing fields, but an empty rule set, or a rule
+    naming a field both report layouts share, passed against the wrong TEE.
+    """
+
+    NONCE = "type-nonce"
+    EVIDENCE_B64 = base64.b64encode(b"\xca\xfe").decode()
+
+    def _policy(self, policy_type, rules=None):
+        return {
+            "metadata": {"policy_type": policy_type, "policy_id": "p", "key_id": "k"},
+            "validation_rules": rules if rules is not None else {},
+        }
+
+    @pytest.mark.parametrize(
+        "tee_type, wrong_type",
+        [("amd-sev-snp", "TDX"), ("intel-tdx", "SEV")],
+        ids=["tdx-policy-vs-sev-evidence", "sev-policy-vs-tdx-evidence"],
+    )
+    @patch("tas.tas_vm.sev_vm_verify", return_value=(True, None))
+    @patch("tas.tas_vm.tdx_vm_verify", return_value=(True, None))
+    def test_cross_tee_policy_rejected_before_verification(
+        self, mock_tdx, mock_sev, tee_type, wrong_type
+    ):
+        """Even an empty policy that would otherwise pass must be refused."""
+        with patch(
+            "tas.tas_vm.get_policy", return_value=(self._policy(wrong_type), "k")
+        ):
+            ok, key_id, err = vm_verify(
+                MagicMock(), MagicMock(), self.NONCE, tee_type, self.EVIDENCE_B64, "p"
+            )
+        assert ok is False
+        assert key_id is None
+        assert err == "Policy type does not match the attestation evidence"
+        mock_sev.assert_not_called()
+        mock_tdx.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "tee_type, right_type",
+        [("amd-sev-snp", "SEV"), ("intel-tdx", "TDX")],
+    )
+    @patch("tas.tas_vm.sev_vm_verify", return_value=(True, None))
+    @patch("tas.tas_vm.tdx_vm_verify", return_value=(True, None))
+    def test_matching_policy_type_proceeds(
+        self, mock_tdx, mock_sev, tee_type, right_type
+    ):
+        with patch(
+            "tas.tas_vm.get_policy", return_value=(self._policy(right_type), "k")
+        ):
+            ok, key_id, err = vm_verify(
+                MagicMock(), MagicMock(), self.NONCE, tee_type, self.EVIDENCE_B64, "p"
+            )
+        assert (ok, key_id, err) == (True, "k", None)
+
+    @pytest.mark.parametrize("variant", ["sev", "Sev", "SEV"])
+    @patch("tas.tas_vm.sev_vm_verify", return_value=(True, None))
+    def test_policy_type_case_insensitive(self, mock_sev, variant):
+        with patch("tas.tas_vm.get_policy", return_value=(self._policy(variant), "k")):
+            ok, _, _ = vm_verify(
+                MagicMock(),
+                MagicMock(),
+                self.NONCE,
+                "amd-sev-snp",
+                self.EVIDENCE_B64,
+                "p",
+            )
+        assert ok is True
+
+    @pytest.mark.parametrize(
+        "bad",
+        [None, "", 1, ["SEV"], "GPU", "amd-sev-snp"],
+        ids=["none", "empty", "int", "list", "unknown", "tee-type-not-policy-type"],
+    )
+    @patch("tas.tas_vm.sev_vm_verify", return_value=(True, None))
+    def test_missing_or_invalid_policy_type_rejected(self, mock_sev, bad):
+        """Policies stored before policy_type was enforced must not slip through."""
+        policy = self._policy("SEV")
+        if bad is None:
+            del policy["metadata"]["policy_type"]
+        else:
+            policy["metadata"]["policy_type"] = bad
+        with patch("tas.tas_vm.get_policy", return_value=(policy, "k")):
+            ok, _, err = vm_verify(
+                MagicMock(),
+                MagicMock(),
+                self.NONCE,
+                "amd-sev-snp",
+                self.EVIDENCE_B64,
+                "p",
+            )
+        assert ok is False
+        assert err == "Policy type does not match the attestation evidence"
+        mock_sev.assert_not_called()
+
+    @patch("tas.tas_vm.sev_vm_verify", return_value=(True, None))
+    def test_non_dict_metadata_rejected(self, mock_sev):
+        policy = {"metadata": "SEV", "validation_rules": {}}
+        with patch("tas.tas_vm.get_policy", return_value=(policy, "k")):
+            ok, _, err = vm_verify(
+                MagicMock(),
+                MagicMock(),
+                self.NONCE,
+                "amd-sev-snp",
+                self.EVIDENCE_B64,
+                "p",
+            )
+        assert ok is False
+        assert err == "Policy type does not match the attestation evidence"
+
+    def test_helper_contract(self):
+        from tas.policy_helper import policy_type_matches
+
+        assert policy_type_matches(self._policy("SEV"), "amd-sev-snp")
+        assert policy_type_matches(self._policy("tdx"), "intel-tdx")
+        assert not policy_type_matches(self._policy("SEV"), "intel-tdx")
+        assert not policy_type_matches(self._policy("TDX"), "amd-sev-snp")
+        # Unknown TEE type never matches anything.
+        assert not policy_type_matches(self._policy("SEV"), "not-a-tee")
+        assert not policy_type_matches({}, "amd-sev-snp")
 
 
 # ── vm_verify GPU evidence tests ────────────────────────────────────
@@ -965,7 +1120,7 @@ _NVIDIA_GPU_POLICY = {
 
 # A policy with the components.gpu section keyed by device type
 _POLICY_WITH_GPU = {
-    "metadata": {"key_id": "gpu-test-key"},
+    "metadata": {"policy_type": "SEV", "key_id": "gpu-test-key"},
     "validation_rules": {},
     "components": {
         "gpu": {
@@ -976,7 +1131,7 @@ _POLICY_WITH_GPU = {
 
 # A policy without any components section
 _POLICY_NO_COMPONENTS = {
-    "metadata": {"key_id": "no-gpu-key"},
+    "metadata": {"policy_type": "SEV", "key_id": "no-gpu-key"},
     "validation_rules": {},
 }
 
@@ -1361,7 +1516,7 @@ class TestVmVerifyGpuPolicy:
         ]
         for components, expected_error in cases:
             policy = {
-                "metadata": {"key_id": "k"},
+                "metadata": {"policy_type": "SEV", "key_id": "k"},
                 "validation_rules": {},
                 **components,
             }
@@ -1396,7 +1551,7 @@ class TestVmVerifyGpuPolicy:
         mock_sev.return_value = (True, None)
         for components in ({"components": None}, {"components": {"gpu": None}}):
             policy = {
-                "metadata": {"key_id": "k"},
+                "metadata": {"policy_type": "SEV", "key_id": "k"},
                 "validation_rules": {},
                 **components,
             }
@@ -1447,7 +1602,7 @@ def test_required_gpu_checks_independent_of_binding(
     with (
         patch(
             "tas.tas_vm.get_policy",
-            return_value=(_POLICY_WITH_GPU, "gpu-test-key"),
+            return_value=(_for_tee(_POLICY_WITH_GPU, tee_type), "gpu-test-key"),
         ),
         patch("tas.tas_vm.gpu_vm_verify", return_value=gpu_result) as gpu,
         patch("tas.tas_vm.gpu_validate_claims", return_value=claims_result) as claims,

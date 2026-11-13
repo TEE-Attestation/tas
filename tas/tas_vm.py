@@ -73,7 +73,12 @@ except ImportError:
         )
 
 
-from tas.policy_helper import is_policy_signed, verify_policy_signature
+from tas.policy_helper import (
+    SUPPORTED_TEE_TYPES,
+    is_policy_signed,
+    policy_type_matches,
+    verify_policy_signature,
+)
 from tas.policy_store import (
     CERTIFY_POLICY_NAMESPACE,
     DOMAIN_POLICY_NAMESPACE,
@@ -85,11 +90,6 @@ from tas.tas_logging import get_logger, log_function_entry, log_function_exit
 # Setup logging for verification output
 logger = get_logger(__name__)
 
-# Maps a request TEE type to the certify-policy ``metadata.policy_type`` value it
-# must carry. Keeps AMD and Intel certify-policies from being evaluated against
-# each other's evidence in the certify flow.
-POLICY_TYPE_BY_TEE = {"amd-sev-snp": "SEV", "intel-tdx": "TDX"}
-SUPPORTED_TEE_TYPES = frozenset(POLICY_TYPE_BY_TEE)
 
 # SUPPORTED_GPU_TYPES (imported from tas.components) lists the GPU device
 # types TAS verifies. A policy's ``components.gpu`` is keyed by these same
@@ -974,6 +974,17 @@ def vm_verify(
         logger.error(f"Policy fetching failed for: '{policy_id}': {e}")
         return False, None, str(e)
 
+    # The client named this one policy; it must be written for the TEE that
+    # produced the evidence.
+    if not policy_type_matches(policy_json, tee_type):
+        metadata = policy_json.get("metadata")
+        declared = metadata.get("policy_type") if isinstance(metadata, dict) else None
+        logger.error(
+            f"Policy '{policy_id}' has policy_type {declared!r}, which does not "
+            f"match TEE type '{tee_type}'"
+        )
+        return False, None, "Policy type does not match the attestation evidence"
+
     verified, verify_error = verify(
         redis_client,
         nonce,
@@ -1553,7 +1564,6 @@ def domain_verify(
             log_function_exit("domain_verify", result)
             return result
 
-    expected_policy_type = POLICY_TYPE_BY_TEE.get(tee_type)
     last_error = None
     for policy_id in candidate_policy_ids:
         try:
@@ -1568,15 +1578,14 @@ def domain_verify(
 
         # Defense in depth: a mis-grouped member must not be evaluated against
         # the wrong TEE's evidence.
-        member_type = policy_json.get("metadata", {}).get("policy_type", "")
-        if (
-            expected_policy_type
-            and member_type
-            and member_type.upper() != expected_policy_type
-        ):
+        if not policy_type_matches(policy_json, tee_type):
+            metadata = policy_json.get("metadata")
+            member_type = (
+                metadata.get("policy_type") if isinstance(metadata, dict) else None
+            )
             logger.warning(
                 f"Skipping certify policy '{policy_id}' for domain "
-                f"'{domain_policy_id}': policy_type '{member_type}' does not "
+                f"'{domain_policy_id}': policy_type {member_type!r} does not "
                 f"match TEE type '{tee_type}'"
             )
             last_error = "certify policy type does not match the attestation evidence"
