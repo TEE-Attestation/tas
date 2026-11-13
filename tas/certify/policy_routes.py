@@ -19,6 +19,8 @@ from flask import Blueprint, current_app, jsonify, request
 
 from ..auth import authenticate_management_request
 from ..policy_helper import (
+    POLICY_TYPE_BY_TEE,
+    SUPPORTED_TEE_TYPES,
     check_signature_for_store,
     is_policy_signed,
     validate_key_component,
@@ -30,7 +32,6 @@ from ..policy_store import (
     PolicyAlreadyExists,
 )
 from ..tas_logging import get_logger
-from ..tas_vm import POLICY_TYPE_BY_TEE, SUPPORTED_TEE_TYPES
 
 logger = get_logger(__name__)
 

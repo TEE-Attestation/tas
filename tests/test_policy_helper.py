@@ -559,3 +559,53 @@ class TestValidatePolicyMetadataComponents:
         policy = _policy_with({"gpu": {"gpu-nvidia": _NVIDIA_RULES}})
         assert validate_policy_metadata(policy) == (True, None)
         assert validate_policy_metadata(policy, require_key_id=False) == (True, None)
+
+
+class TestValidatePolicyMetadataPolicyType:
+    """policy_type must be one of the TEE types TAS can evaluate (case-insensitive).
+
+    Regression tests: any truthy value was accepted at store time, so the
+    verifier's policy_type/tee_type match could never be relied upon.
+    """
+
+    @pytest.mark.parametrize("value", ["SEV", "TDX", "sev", "tdx", "Sev"])
+    def test_supported_types_accepted(self, value):
+        from tas.policy_helper import validate_policy_metadata
+
+        policy = _policy_with()
+        policy["metadata"]["policy_type"] = value
+        assert validate_policy_metadata(policy) == (True, None)
+
+    @pytest.mark.parametrize(
+        "value",
+        ["GPU", "amd-sev-snp", "intel-tdx", "SEV-SNP", "SGX", 1, True, ["SEV"]],
+        ids=repr,
+    )
+    def test_unsupported_types_rejected(self, value):
+        from tas.policy_helper import validate_policy_metadata
+
+        policy = _policy_with()
+        policy["metadata"]["policy_type"] = value
+        ok, err = validate_policy_metadata(policy)
+        assert ok is False
+        assert "is not supported" in err
+        assert "SEV" in err and "TDX" in err
+
+    def test_missing_type_message_unchanged(self):
+        from tas.policy_helper import validate_policy_metadata
+
+        policy = _policy_with()
+        del policy["metadata"]["policy_type"]
+        ok, err = validate_policy_metadata(policy)
+        assert ok is False
+        assert err == "Policy type is required in metadata (e.g. SEV, TDX)"
+
+    def test_constants_consistent(self):
+        from tas.policy_helper import (
+            POLICY_TYPE_BY_TEE,
+            SUPPORTED_POLICY_TYPES,
+            SUPPORTED_TEE_TYPES,
+        )
+
+        assert SUPPORTED_TEE_TYPES == frozenset(POLICY_TYPE_BY_TEE)
+        assert SUPPORTED_POLICY_TYPES == frozenset(POLICY_TYPE_BY_TEE.values())

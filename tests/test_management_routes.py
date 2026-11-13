@@ -160,6 +160,18 @@ class TestManagementStorePolicy:
         )
         assert resp.status_code == 400
 
+    @pytest.mark.parametrize("bad_type", ["GPU", "amd-sev-snp", "SGX"])
+    def test_store_policy_unsupported_policy_type(self, client, mgmt_headers, bad_type):
+        payload = json.loads(json.dumps(VALID_POLICY_PAYLOAD))
+        payload["metadata"]["policy_type"] = bad_type
+        resp = client.post(
+            "/management/policy/v0/store",
+            headers=mgmt_headers,
+            data=json.dumps(payload),
+        )
+        assert resp.status_code == 400
+        assert "is not supported" in resp.get_json()["error"]
+
     def test_store_policy_missing_policy_id(self, client, mgmt_headers):
         payload = json.loads(json.dumps(VALID_POLICY_PAYLOAD))
         del payload["metadata"]["policy_id"]

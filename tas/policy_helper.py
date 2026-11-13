@@ -25,6 +25,28 @@ from .tas_logging import get_logger
 # Get logger for this module
 logger = get_logger(__name__)
 
+# ``metadata.policy_type`` values TAS knows how to evaluate, and the request
+# ``tee-type`` each corresponds to. A policy's rules are specific to one TEE's
+# report layout, so the verifier refuses to evaluate a policy against evidence
+# from a different TEE; constraining the value here keeps that check meaningful.
+POLICY_TYPE_BY_TEE = {"amd-sev-snp": "SEV", "intel-tdx": "TDX"}
+SUPPORTED_TEE_TYPES = frozenset(POLICY_TYPE_BY_TEE)
+SUPPORTED_POLICY_TYPES = frozenset(POLICY_TYPE_BY_TEE.values())
+
+
+def policy_type_matches(policy, tee_type):
+    """Return True if ``policy`` is written for the TEE that produced the evidence.
+
+    The comparison is case-insensitive on ``metadata.policy_type`` and treats a
+    missing or non-string value, or a non-object ``metadata``, as a mismatch.
+    """
+    expected = POLICY_TYPE_BY_TEE.get(tee_type)
+    if expected is None:
+        return False
+    metadata = policy.get("metadata")
+    declared = metadata.get("policy_type") if isinstance(metadata, dict) else None
+    return isinstance(declared, str) and declared.upper() == expected
+
 
 def is_policy_signed(policy_data):
     """Determine if a policy is signed.
@@ -292,6 +314,16 @@ def validate_policy_metadata(policy, require_key_id=True):
 
     if not metadata.get("policy_type"):
         return False, "Policy type is required in metadata (e.g. SEV, TDX)"
+    policy_type = metadata["policy_type"]
+    if (
+        not isinstance(policy_type, str)
+        or policy_type.upper() not in SUPPORTED_POLICY_TYPES
+    ):
+        return (
+            False,
+            f"Policy type {policy_type!r} is not supported; expected one of "
+            f"{', '.join(sorted(SUPPORTED_POLICY_TYPES))}",
+        )
     if require_key_id and not metadata.get("key_id"):
         return False, "Key ID is required in metadata"
     if not metadata.get("policy_id"):
