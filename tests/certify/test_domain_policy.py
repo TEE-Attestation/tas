@@ -17,6 +17,7 @@ from flask import Flask
 from tas import tas_vm
 from tas.auth import init_client_auth, init_management_auth
 from tas.certify.policy_routes import certify_policy_bp
+from tas.policy_helper import POLICY_TYPE_BY_TEE
 from tas.policy_store import RedisPolicyStore
 
 CLIENT_API_KEY = "a" * 64
@@ -148,6 +149,13 @@ class TestCertifyPolicyManagement:
     def test_store_requires_management_key(self, client, client_headers):
         resp = self._store(client, client_headers, _certify_policy("pol-a"))
         assert resp.status_code == 401
+
+    def test_store_unsupported_policy_type_rejected(self, client, mgmt_headers, redis):
+        policy = _certify_policy("pol-bad", policy_type="SGX")
+        resp = self._store(client, mgmt_headers, policy)
+        assert resp.status_code == 400
+        assert "is not supported" in resp.get_json()["error"]
+        assert redis.get("certify-policy:pol-bad") is None
 
     def test_store_malformed_components_rejected(self, client, mgmt_headers, redis):
         """Certify-policies share the components shape check with secret policies."""
@@ -360,7 +368,7 @@ def _seed_domain(redis, name, member_ids, tee_type="amd-sev-snp"):
         f"domain-policy:{name}",
         json.dumps(_domain_policy(name, member_ids, tee_type)),
     )
-    policy_type = tas_vm.POLICY_TYPE_BY_TEE[tee_type]
+    policy_type = POLICY_TYPE_BY_TEE[tee_type]
     for member_id in member_ids:
         redis.set(
             f"certify-policy:{member_id}",

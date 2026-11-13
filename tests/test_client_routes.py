@@ -362,6 +362,7 @@ def test_combined_policy_controls_secret_release(app, client, failure):
     }
     policy = {
         "metadata": {
+            "policy_type": "SEV",
             "policy_id": "combined-policy",
             "key_id": "combined-policy-secret",
         },
@@ -443,7 +444,11 @@ def test_secret_checks_report_data_binding(app, client, report_binding):
     app.config["TAS_ENFORCE_SIGNED_POLICIES"] = False
     app.extensions["policy_store"].get.return_value = json.dumps(
         {
-            "metadata": {"policy_id": "policy:test", "key_id": "bound-secret"},
+            "metadata": {
+                "policy_type": "SEV",
+                "policy_id": "policy:test",
+                "key_id": "bound-secret",
+            },
             "validation_rules": {},
         }
     )
@@ -496,7 +501,11 @@ def test_secret_accepts_quoted_agent_nonce_and_binds_unquoted(app, client):
     redis_client.getdel.return_value = "1"
     app.extensions["policy_store"].get.return_value = json.dumps(
         {
-            "metadata": {"policy_id": "policy:test", "key_id": "bound-secret"},
+            "metadata": {
+                "policy_type": "SEV",
+                "policy_id": "policy:test",
+                "key_id": "bound-secret",
+            },
             "validation_rules": {},
         }
     )

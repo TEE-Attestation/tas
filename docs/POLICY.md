@@ -88,7 +88,7 @@ TAS keeps policies in the policy store that `TAS_POLICY_BACKEND` selects: Redis 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `name` | string | Yes | Human-readable policy name |
-| `policy_type` | string | Yes | TEE type (e.g. `SEV`, `TDX`) |
+| `policy_type` | string | Yes | The TEE this policy's rules are written for: `SEV` (AMD SEV-SNP, request `tee-type` `amd-sev-snp`) or `TDX` (Intel TDX, `intel-tdx`). Case-insensitive; any other value is rejected at store time. A policy is only ever evaluated against evidence from its own TEE (see [TEE Type Binding](#tee-type-binding)). |
 | `policy_id` | string | Yes | Unique identifier for this policy (alphanumeric, hyphens, underscores, dots only) |
 | `key_id` | string | Yes | The secret ID this policy is used to release (must match the secret registered in KMS or HSM) |
 | `version` | string | No | Policy version |
@@ -270,6 +270,13 @@ The signature covers **all top-level fields** in the policy (metadata, validatio
 A valid signature proves a policy is untampered and was issued by a trusted author; it does not by itself prove it is the policy that was *requested*. TAS therefore binds every fetched policy to the id it was looked up under: after signature verification, `metadata.policy_id` (which is inside the signed envelope) must exactly equal the requested id, or the policy is rejected with an identity mismatch. This applies to secret-release policies, certify-policies and domain-policies alike, and is enforced even when `TAS_ENFORCE_SIGNED_POLICIES` is `false`.
 
 Without this binding, anyone able to write to the policy store — but without the signing key — could copy a validly signed permissive policy over the key of a stricter one and have it accepted.
+
+### TEE Type Binding
+
+A policy's `validation_rules` are specific to one TEE's report layout, so TAS never evaluates a policy against evidence from a different TEE. The signed `metadata.policy_type` must correspond to the request's `tee-type` (`SEV` ↔ `amd-sev-snp`, `TDX` ↔ `intel-tdx`):
+
+- **Secret release** (`/kb/v0/get_secret`): the requested policy must match, or verification fails with `Policy type does not match the attestation evidence`.
+- **Certify** (`/alphav1/certify`): domain-policy members whose type does not match are skipped; if none match, the request fails.
 
 > **Note:** Policies must be signed using RFC 8785 canonicalization. Any custom signing tool must canonicalize the policy to be signed with JCS before signing.
 
