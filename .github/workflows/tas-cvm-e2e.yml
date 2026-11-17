@@ -1,0 +1,112 @@
+# TEE Attestation Service - Confidential VM end-to-end attestation test.
+# Manually dispatched for a PR at an explicitly confirmed commit.
+
+name: TAS CVM E2E test
+
+on:
+  workflow_dispatch:
+    inputs:
+      tas_repo_url:
+        description: "HTTPS GitHub repository URL containing the TAS branch (supports fork PRs)"
+        required: true
+        type: string
+      tas_branch:
+        description: "Branch name associated with the PR"
+        required: true
+        type: string
+      expected_sha:
+        description: "Exact 40-character head commit SHA to test"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: tas-cvm-e2e
+  cancel-in-progress: false
+
+jobs:
+  e2e:
+    name: Run TAS attestation test in a Confidential VM
+    environment: tas-cvm-e2e
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      TAS_E2E_INSTANCE: ""
+      TAS_E2E_PROJECT: ""
+      TAS_E2E_ZONE: ""
+    steps:
+      - name: Validate requested repository, branch, and commit
+        id: target
+        env:
+          TAS_REPO_URL: ${{ inputs.tas_repo_url }}
+          TAS_BRANCH: ${{ inputs.tas_branch }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$TAS_REPO_URL" =~ ^https://github\.com/[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*(\.git)?$ ]] || {
+            echo "tas_repo_url must be an HTTPS GitHub repository URL." >&2; exit 1;
+          }
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "expected_sha must be a 40-character lowercase commit SHA." >&2; exit 1;
+          }
+          resolved="$(git ls-remote "$TAS_REPO_URL" "refs/heads/$TAS_BRANCH" | awk 'NR == 1 {print $1}')"
+          [[ "$resolved" == "$EXPECTED_SHA" ]] || {
+            echo "Branch head is '$resolved', not expected SHA '$EXPECTED_SHA'. Confirm the PR head before dispatching." >&2
+            exit 1
+          }
+          echo "Testing $TAS_REPO_URL branch $TAS_BRANCH at commit $EXPECTED_SHA"
+
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Authenticate with Workload Identity Federation
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
+        with:
+          workload_identity_provider: projects/811403034336/locations/global/workloadIdentityPools/github-actions/providers/github
+          service_account: tas-e2e-test@hpe-labs-cc.iam.gserviceaccount.com
+          create_credentials_file: true
+
+      - name: Set up gcloud CLI
+        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+        with:
+          project_id: hpe-labs-cc
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: 1.9.8
+          terraform_wrapper: false
+
+      - name: Provision CVM and run TAS E2E test
+        timeout-minutes: 165
+        env:
+          TF_VAR_project_id: hpe-labs-cc
+          TF_VAR_region: europe-west4
+          TF_VAR_zone: europe-west4-a
+          TAS_REPO_URL: ${{ inputs.tas_repo_url }}
+          TAS_BRANCH: ${{ inputs.tas_branch }}
+          TAS_COMMIT: ${{ inputs.expected_sha }}
+          TAS_VM_MAX_RUNTIME_MINUTES: "180"
+        run: bash ci/tas-cvm-e2e/run.sh
+
+      - name: Delete a leftover CVM
+        if: ${{ always() && env.TAS_E2E_INSTANCE != '' }}
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          candidates="$(gcloud compute instances list \
+            --project="$TAS_E2E_PROJECT" --zones="$TAS_E2E_ZONE" \
+            --filter="name=$TAS_E2E_INSTANCE AND labels.purpose=tas-cvm-e2e" \
+            --format='value(name)')"
+          if [[ -z "$candidates" ]]; then
+            echo "No labeled CVM remains for this run."
+          elif [[ "$candidates" == "$TAS_E2E_INSTANCE" ]]; then
+            gcloud compute instances delete "$TAS_E2E_INSTANCE" \
+              --project="$TAS_E2E_PROJECT" --zone="$TAS_E2E_ZONE" --quiet
+          else
+            echo "Unexpected matches for $TAS_E2E_INSTANCE; refusing to delete." >&2
+            exit 1
+          fi
