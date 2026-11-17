@@ -208,3 +208,19 @@ appendonlydir/
 dump.rdb
 *.rdb
 *.aof
+
+# Terraform local data, state, and variable files
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.tfvars.json
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Local E2E run logs
+/ci/tas-cvm-e2e/logs/
