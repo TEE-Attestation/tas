@@ -17,3 +17,8 @@
 # maintained by HPE. Used purely as a test oracle to independently validate
 # that issued leaf certificates parse as well-formed X509-SVIDs.
 spiffe>=0.3,<0.4
+mypy>=1.10.0
+types-PyYAML>=6.0.0
+types-requests>=2.31.0
+types-Deprecated>=1.2.9
+
