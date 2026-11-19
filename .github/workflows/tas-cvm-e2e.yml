@@ -1,0 +1,121 @@
+# TEE Attestation Service - Confidential VM end-to-end attestation test.
+# Manually dispatched for a validated PR.
+
+name: TAS CVM E2E test
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "Open PR number in this repository (must target main)"
+        required: true
+        type: number
+      expected_sha:
+        description: "Full 40-character head commit SHA of the PR. The run fails if the PR head differs."
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+  pull-requests: read
+
+concurrency:
+  group: tas-cvm-e2e
+  cancel-in-progress: false
+
+jobs:
+  e2e:
+    name: Run TAS attestation test in a Confidential VM
+    environment: tas-cvm-e2e
+    runs-on: ubuntu-latest
+    timeout-minutes: 100
+    env:
+      TAS_E2E_INSTANCE: ""
+      TAS_E2E_PROJECT: ""
+      TAS_E2E_ZONE: ""
+    steps:
+      - name: Validate PR and resolve its head revision
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]] || { echo "PR number must be a positive integer." >&2; exit 1; }
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "expected_sha must be a 40-character lowercase commit SHA." >&2; exit 1; }
+          pr="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER")"
+          state="$(jq -r '.state' <<<"$pr")"
+          base="$(jq -r '.base.ref' <<<"$pr")"
+          repo="$(jq -r '.head.repo.full_name // empty' <<<"$pr")"
+          branch="$(jq -r '.head.ref' <<<"$pr")"
+          sha="$(jq -r '.head.sha' <<<"$pr")"
+
+          [[ "$state" == open ]] || { echo "PR #$PR_NUMBER is not open." >&2; exit 1; }
+          [[ "$base" == main ]] || { echo "PR #$PR_NUMBER targets '$base', not main." >&2; exit 1; }
+          [[ "$sha" == "$EXPECTED_SHA" ]] || {
+            echo "PR #$PR_NUMBER head is $sha, not the expected $EXPECTED_SHA. Re-check the PR before dispatching." >&2
+            exit 1
+          }
+          [[ -n "$repo" && -n "$branch" && "$sha" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "PR #$PR_NUMBER has no available head repository or commit." >&2
+            exit 1
+          }
+
+          echo "repo_url=https://github.com/$repo.git" >> "$GITHUB_OUTPUT"
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "Testing PR #$PR_NUMBER from $repo, branch $branch, commit $sha"
+
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Authenticate with Workload Identity Federation
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
+        with:
+          workload_identity_provider: projects/811403034336/locations/global/workloadIdentityPools/github-actions/providers/github
+          service_account: tas-e2e-test@hpe-labs-cc.iam.gserviceaccount.com
+          create_credentials_file: true
+
+      - name: Set up gcloud CLI
+        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+        with:
+          project_id: hpe-labs-cc
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: 1.9.8
+          terraform_wrapper: false
+
+      - name: Provision CVM and run TAS E2E test
+        timeout-minutes: 85
+        env:
+          TF_VAR_project_id: hpe-labs-cc
+          TF_VAR_region: europe-west4
+          TF_VAR_zone: europe-west4-a
+          TAS_REPO_URL: ${{ steps.pr.outputs.repo_url }}
+          TAS_BRANCH: ${{ steps.pr.outputs.branch }}
+          TAS_COMMIT: ${{ steps.pr.outputs.sha }}
+          TAS_VM_MAX_RUNTIME_MINUTES: "90"
+        run: bash ci/tas-cvm-e2e/run.sh
+
+      - name: Delete a leftover CVM
+        if: ${{ always() && env.TAS_E2E_INSTANCE != '' }}
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          candidates="$(gcloud compute instances list \
+            --project="$TAS_E2E_PROJECT" --zones="$TAS_E2E_ZONE" \
+            --filter="name=$TAS_E2E_INSTANCE AND labels.purpose=tas-cvm-e2e" \
+            --format='value(name)')"
+          if [[ -z "$candidates" ]]; then
+            echo "No labeled CVM remains for this run."
+          elif [[ "$candidates" == "$TAS_E2E_INSTANCE" ]]; then
+            gcloud compute instances delete "$TAS_E2E_INSTANCE" \
+              --project="$TAS_E2E_PROJECT" --zone="$TAS_E2E_ZONE" --quiet
+          else
+            echo "Unexpected matches for $TAS_E2E_INSTANCE; refusing to delete." >&2
+            exit 1
+          fi
