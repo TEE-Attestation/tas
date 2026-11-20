@@ -29,4 +29,27 @@ pythonpath = ["."]
 # X509-SVIDs. It is NOT a runtime dependency of the service.
 dev = [
     "spiffe>=0.3,<0.4",
+    "mypy>=1.10.0",
+    "types-PyYAML>=6.0.0",
+    "types-requests>=2.31.0",
+    "types-Deprecated>=1.2.9",
 ]
+
+[tool.mypy]
+python_version = "3.10"
+mypy_path = "stubs"
+explicit_package_bases = true
+files = [
+    "tas/types.py",
+]
+strict = true
+warn_unreachable = true
+enable_error_code = ["ignore-without-code", "redundant-expr", "truthy-bool"]
+follow_imports = "silent"
+
+[[tool.mypy.overrides]]
+module = [
+    "asn1crypto.*",
+    "nvidia_pytools.*",
+]
+ignore_missing_imports = true
