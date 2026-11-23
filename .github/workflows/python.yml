@@ -57,17 +57,21 @@ jobs:
             exit 1
           fi
           pip install --upgrade pip
-          git clone https://github.com/TEE-Attestation/sev_pytools.git
-          cd sev_pytools && pip install . && cd ..
-          git clone https://github.com/TEE-Attestation/tdx_pytools.git
-          cd tdx_pytools && pip install . && cd ..
-          git clone https://github.com/TEE-Attestation/nvidia_pytools.git
-          cd nvidia_pytools && pip install . && cd ..
+          git clone https://github.com/TEE-Attestation/sev_pytools.git "$RUNNER_TEMP/sev_pytools"
+          pip install "$RUNNER_TEMP/sev_pytools"
+          git clone https://github.com/TEE-Attestation/tdx_pytools.git "$RUNNER_TEMP/tdx_pytools"
+          pip install "$RUNNER_TEMP/tdx_pytools"
+          git clone https://github.com/TEE-Attestation/nvidia_pytools.git "$RUNNER_TEMP/nvidia_pytools"
+          pip install "$RUNNER_TEMP/nvidia_pytools"
           pip install -r requirements.txt
+          pip install -r requirements-dev.txt
           pip install pytest pytest-cov
 
       - name: Compile check
         run: python -m compileall -q -o 2 ./
+
+      - name: Type check
+        run: pyrefly check --output-format=github
 
       - name: Unit tests
         run: python -m pytest tests/ -v

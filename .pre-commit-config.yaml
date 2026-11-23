@@ -9,3 +9,11 @@ repos:
     rev: 25.12.0
     hooks:
       - id: black
+  - repo: local
+    hooks:
+      - id: pyrefly-check
+        name: pyrefly check
+        entry: pyrefly check
+        language: system
+        types_or: [python, pyi]
+        pass_filenames: false
