@@ -29,4 +29,14 @@ pythonpath = ["."]
 # X509-SVIDs. It is NOT a runtime dependency of the service.
 dev = [
     "spiffe>=0.3,<0.4",
+    "pyrefly==1.4.1",
 ]
+
+[tool.pyrefly]
+python-version = "3.10"          # oldest version we support (requires-python)
+preset = "strict"
+project-includes = ["tas/types.py"]   # widen as more modules get typed
+# GPU support is optional: most contributors don't install nvidia_pytools.
+# If it's missing, its imports are treated as Any. If it's installed
+# (e.g. in CI), the real types are fully checked.
+ignore-missing-imports = ["nvidia_pytools", "nvidia_pytools.*"]

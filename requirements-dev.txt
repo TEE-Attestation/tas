@@ -17,3 +17,4 @@
 # maintained by HPE. Used purely as a test oracle to independently validate
 # that issued leaf certificates parse as well-formed X509-SVIDs.
 spiffe>=0.3,<0.4
+pyrefly==1.4.1
