@@ -19,7 +19,7 @@ BAO_AUTH_METHOD: "token"
 # BAO_SECRET_ID: ""
 # BAO_SECRET_ID_FILE: "" # If both BAO_SECRET_ID and BAO_SECRET_ID_FILE are set, the file variable takes precedence
 # BAO_APPROLE_MOUNT: "approle"  # default: "approle"
-# BAO_TOKEN_RENEW_ON_401: true  # default: true
+# BAO_TOKEN_RENEW_ON_401: true  # Renew/re-authenticate when the token is rejected; default: true
 # Environment overrides: BAO_AUTH_METHOD, BAO_ROLE_ID, BAO_SECRET_ID,
 # BAO_SECRET_ID_FILE, BAO_APPROLE_MOUNT, BAO_TOKEN_RENEW_ON_401.
 

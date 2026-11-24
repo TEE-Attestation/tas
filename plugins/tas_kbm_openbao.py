@@ -780,38 +780,55 @@ class _OpenBaoClient:
             1  # Increment token generation to indicate a new token has been obtained
         )
 
+    def _should_reauthenticate(self, response: requests.Response) -> bool:
+        """Check whether a failed request indicates an invalid token, not missing permission."""
+        # A 401 means an unauthorized token; no further check is needed.
+        if response.status_code == 401:
+            return True
+
+        # 403 could mean an invalid token or insufficient permission
+        if response.status_code != 403:
+            return False
+
+        # Check the token itself to distinguish revocation from a permission denial.
+        # If this request also fails, re-authenticate; otherwise preserve the original 403.
+        lookup = self._execute_request("GET", f"{self.url}/v1/auth/token/lookup-self")
+        return lookup.status_code in (401, 403)
+
     def _make_request(self, method: str, url: str, **kwargs: Any) -> requests.Response:
         token_generation = self._token_generation
         reauth_generation = self._reauth_generation
         response = self._execute_request(method, url, **kwargs)
 
-        if response.status_code == 401:
-            if (
-                self.auth_method == "approle" and self.token_renew_on_401
-            ):  # 401 reiceived, approle selected and token renewal on 401 is enabled, attempt to renew the token or re-login via approle and try again.
-                with self._reauth_lock:
-                    # Another request already refreshed the token successfully.
-                    if self._token_generation != token_generation:
-                        pass
-                    # Another request already tried and failed authentication, share the failure.
-                    elif self._reauth_generation != reauth_generation:
-                        error = self._last_reauth_error
-                        if error is not None:
-                            raise error
+        # Token rejected, approle selected and token renewal on 401 is enabled: renew the token or re-login via approle and try again.
+        if (
+            self.auth_method == "approle"
+            and self.token_renew_on_401
+            and self._should_reauthenticate(response)
+        ):
+            with self._reauth_lock:
+                # Another request already refreshed the token successfully.
+                if self._token_generation != token_generation:
+                    pass
+                # Another request already tried and failed authentication, share the failure.
+                elif self._reauth_generation != reauth_generation:
+                    error = self._last_reauth_error
+                    if error is not None:
+                        raise error
+                else:
+                    try:
+                        if not self._renew_token():
+                            self._login_approle()
+                    except Exception as error:
+                        self._last_reauth_error = error
+                        raise
                     else:
-                        try:
-                            if not self._renew_token():
-                                self._login_approle()
-                        except Exception as error:
-                            self._last_reauth_error = error
-                            raise
-                        else:
-                            self._last_reauth_error = None
-                        finally:
-                            self._reauth_generation += (
-                                1  # Publish reauthentication even when it fails
-                            )
-                response = self._execute_request(method, url, **kwargs)
+                        self._last_reauth_error = None
+                    finally:
+                        self._reauth_generation += (
+                            1  # Publish reauthentication even when it fails
+                        )
+            response = self._execute_request(method, url, **kwargs)
 
         return response
 
@@ -856,7 +873,7 @@ class _OpenBaoClient:
         resp = self._make_request("GET", url)
 
         if resp.status_code == 404:
-            logger.error("Secret not found in OpenBao")
+            logger.debug("Secret not found in OpenBao for key_id: %s", key_id)
             raise _OpenBaoSecretNotFound("Secret not found")
         elif resp.status_code != 200:
             logger.error(
@@ -968,6 +985,10 @@ class _OpenBaoClient:
             return self._read_secret(key_id)
         except _OpenBaoSecretNotFound:
             if not self.create_key_if_absent:
+                logger.warning(
+                    "OpenBao key not found and create_key_if_absent is disabled: %s",
+                    key_id,
+                )
                 raise
 
         secret = _secrets.token_urlsafe(32)
