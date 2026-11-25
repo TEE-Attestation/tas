@@ -1337,6 +1337,63 @@ class TestOpenBaoKBM(unittest.TestCase):
         finally:
             client.close()
 
+    @patch("requests.Session.get")
+    @patch("requests.Session.post")
+    def test_forbidden_permission_denial_does_not_relogin(self, mock_post, mock_get):
+        login_response = MagicMock(status_code=200)
+        login_response.json.return_value = {"auth": {"client_token": "token-a"}}
+        mock_post.return_value = login_response
+        denied_read = MagicMock(status_code=403)
+        lookup_valid = MagicMock(status_code=200)
+        mock_get.side_effect = [denied_read, lookup_valid]
+        client = _OpenBaoClient(
+            url="https://bao.example:8200",
+            auth_method="approle",
+            role_id="role-id",
+            secret_id="secret-id",
+        )
+        try:
+            with self.assertRaises(OpenBaoResponseError):
+                client.get_secret("key")
+            self.assertEqual(mock_post.call_count, 1)
+            self.assertEqual(mock_get.call_count, 2)
+        finally:
+            client.close()
+
+    @patch("requests.Session.get")
+    @patch("requests.Session.post")
+    def test_revoked_approle_token_reauthenticates_after_403(self, mock_post, mock_get):
+        login_response = MagicMock(status_code=200)
+        login_response.json.return_value = {"auth": {"client_token": "token-a"}}
+        renew_response = MagicMock(status_code=200)
+        renew_response.json.return_value = {"auth": {"client_token": "token-b"}}
+        mock_post.side_effect = [login_response, renew_response]
+
+        forbidden_read = MagicMock(status_code=403)
+        revoked_token_lookup = MagicMock(status_code=403)
+        successful_retry = MagicMock(status_code=200)
+        successful_retry.json.return_value = {"data": {"data": {"secret": "value"}}}
+        mock_get.side_effect = [forbidden_read, revoked_token_lookup, successful_retry]
+
+        client = _OpenBaoClient(
+            url="https://bao.example:8200",
+            auth_method="approle",
+            role_id="role-id",
+            secret_id="secret-id",
+        )
+        try:
+            self.assertEqual(client.get_secret("key"), b"value")
+            self.assertEqual(mock_post.call_count, 2)
+            self.assertTrue(
+                mock_post.call_args_list[1]
+                .args[0]
+                .endswith("/v1/auth/token/renew-self")
+            )
+            self.assertEqual(mock_get.call_count, 3)
+            self.assertEqual(client.token, "token-b")
+        finally:
+            client.close()
+
     @patch("requests.Session.post")
     def test_nested_approle_mount_login_url(self, mock_post):
         response = MagicMock(status_code=200)
