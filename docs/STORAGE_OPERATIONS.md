@@ -100,9 +100,16 @@ configure `appendonly`, `appendfsync`, and `save` in `redis.conf`.
 | Key pattern | TTL | Effect of key loss |
 |-------------|-----|--------------------|
 | `policy:<id>`, `certify-policy:<id>`, `domain-policy:<id>` | None | Restore policies from a backup or upload them again. These keys apply only to the Redis policy backend. |
-| `certs:*` | None | TAS fetches certificates again on a cache miss. |
-| `crl:*`, `tdx_collateral:*` | 48 hours | TAS fetches collateral again on a cache miss. |
+| `sev:vcek:<chip id>:<reported TCB>` | None | TAS fetches the VCEK from the AMD KDS again on a cache miss. One entry per chip; superseded TCBs are dropped. |
+| `sev:crl:<family>` | None (refreshed from the KDS after 48 hours or at `next_update`) | TAS fetches the CRL again on a cache miss. One entry per AMD processor family (Milan, Genoa, Turin). |
+| `tdx_collateral:*` | 48 hours | TAS fetches collateral again on a cache miss. |
 | `nonce:<64-hex>` | `TAS_NONCE_EXPIRATION_SECONDS` (default: 120 seconds) | Clients must ask for new nonces. |
+
+The AMD root and intermediate certificates (ARK, ASK) are built into
+`sev_pytools` and are not stored. Earlier releases cached them per chip under
+`certs:*` and the CRL per chip under `crl:*`; those keys are no longer read and
+can be deleted (`redis-cli --scan --pattern 'certs:*' | xargs -r redis-cli del`,
+likewise for `crl:*`).
 
 Without Redis persistence, a Redis restart loses the policies in that
 instance. It does not affect policies in PostgreSQL. Caches use the primary

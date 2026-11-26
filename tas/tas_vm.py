@@ -102,167 +102,171 @@ logger = get_logger(__name__)
 DEFAULT_MAX_GPU_EVIDENCE_ENTRIES = 16
 
 
-def sev_fetch_certs_from_redis(redis_client: redis.StrictRedis, report):
+# --------------------------------------------------------------------------- #
+# AMD SEV-SNP certificate cache
+#
+# The AMD root and intermediate certificates (ARK, ASK) are built into
+# sev_pytools and pinned there; only the per-chip VCEK and the per-family CRL
+# are fetched from the AMD KDS and cached in Redis:
+#
+#   sev:vcek:<chip id>:<reported TCB>   one VCEK per chip and reported TCB
+#   sev:crl:<family>                    one CRL per processor family
+#                                       (fields: pem, fetched_at)
+#
+# The processor family (Milan, Genoa, Turin, ...) selects the KDS URLs and the
+# CRL. It is read from the report's CPUID (report version 3+); version-2
+# reports carry none, so it is derived from the issuer of the cached VCEK or,
+# on a first encounter, found by asking the KDS family by family.
+# --------------------------------------------------------------------------- #
+SEV_VCEK_KEY = "sev:vcek:{hwid}:{tcb}"
+SEV_CRL_KEY = "sev:crl:{family}"
+SEV_CRL_REFRESH_SECONDS = 48 * 60 * 60
+SEV_FAMILY_PROBE_ORDER = (sev.ProcType.GENOA, sev.ProcType.MILAN, sev.ProcType.TURIN)
+
+
+def sev_tcb_tag(tcb) -> str:
+    """Reported TCB as a key component: bl.tee.snp.ucode, FMC-prefixed on Turin+."""
+    parts = [tcb.bootloader, tcb.tee, tcb.snp, tcb.microcode]
+    if tcb.fmc is not None:
+        parts.insert(0, tcb.fmc)
+    return ".".join(str(p) for p in parts)
+
+
+def sev_processor_family(report, vcek=None):
     """
-    Fetches certificates (VCEK, ASK, ARK) from Redis based on the provided TEE evidence.
-    This function decodes base64-encoded TEE evidence, parses the SEV-SNP report to extract
-    chip ID and reported TCB information, then uses these values to construct a Redis
-    key for fetching the corresponding certificates.
-    Args:
-        redis_client (redis.StrictRedis): Redis client instance for database operations.
-        report (sev.AttestationReport): Parsed SEV-SNP attestation report.
-    Returns:
-        list or None: A list containing three certificate strings [vcek, ask, ark] if
-                     all certificates are found in Redis, None otherwise.
-    Raises:
-        Does not raise exceptions directly, but catches and logs various exceptions:
-        - SEV-SNP report parsing errors
-    Notes:
-        - The Redis key format is "certs:<chip_id>:<reported_tcb>"
-        - All three certificates (VCEK, ASK, ARK) must be present for a successful return
-        - Error messages are logged
+    Processor family (sev.ProcType) of the platform that produced the report.
+
+    From the report's CPUID when it carries one (version 3+), else from the AMD
+    ASK that issued the VCEK when one is at hand, else None.
     """
-    log_function_entry("sev_fetch_certs_from_redis")
+    if report.supports_cpuid:
+        try:
+            return sev.cpuid_to_processor_type(report.cpuid)
+        except ValueError as e:
+            logger.warning(f"{e}; deriving the processor family from the VCEK")
+    if vcek is not None:
+        ark = sev.complete_certificates({"vcek": vcek})["ark"]
+        return sev.ProcType[sev.builtin_family_of_ark(ark).upper()]
+    return None
 
-    # Use the chip_id and reported_tcb to fetch the VCEK from Redis
-    # Redis key is structured as "vcek:<chip_id>:<reported_tcb>"
-    redis_key = f"certs:{report.chip_id}:{report.reported_tcb}"
-    logger.info(f"Fetching certificates from Redis")
-    certs = redis_client.hgetall(redis_key)
-    # Check for at least 3 certs, we don't mind if the CRL has expired.
-    if len(certs) < 3:
-        logger.info(f"Certificates not found in Redis for key: {redis_key}")
-        return None, None
-    crl = None
-    if "crl" in certs:
-        crl = x509.load_pem_x509_crl(certs.pop("crl").encode("utf-8"))
 
-    for key in certs:
-        certs[key] = x509.load_pem_x509_certificate(certs[key].encode("utf-8"))
+def sev_get_vcek(redis_client: redis.StrictRedis, report):
+    """Cached VCEK for the report's chip and reported TCB, or None."""
+    key = SEV_VCEK_KEY.format(
+        hwid=report.get_hwid(), tcb=sev_tcb_tag(report.reported_tcb)
+    )
+    pem = redis_client.get(key)
+    if pem is None:
+        logger.info(f"VCEK not cached ({key})")
+        return None
+    logger.info(f"Using cached VCEK ({key})")
+    return x509.load_pem_x509_certificate(_as_bytes(pem))
 
-    redis_key_crl = f"crl:{report.chip_id}:{report.reported_tcb}"
-    redis_crl = redis_client.hget(redis_key_crl, "crl")
-    if redis_crl is not None:
-        crl = x509.load_pem_x509_crl(redis_crl.encode("utf-8"))
 
-    # Refresh the CRL if the short-lived TTL key has expired or the cached CRL
-    # is past its next_update, otherwise an expired CRL would fail verification.
+def sev_store_vcek(redis_client: redis.StrictRedis, report, vcek) -> None:
+    """
+    Cache the VCEK. A platform has a single reported TCB at a time, so entries
+    for the same chip at other TCBs are dropped rather than accumulated.
+    """
+    hwid = report.get_hwid()
+    key = SEV_VCEK_KEY.format(hwid=hwid, tcb=sev_tcb_tag(report.reported_tcb))
+    stale = [
+        k
+        for k in redis_client.scan_iter(
+            match=SEV_VCEK_KEY.format(hwid=hwid, tcb="*"), count=100
+        )
+        if k != key
+    ]
+    if stale:
+        logger.info(f"Dropping {len(stale)} VCEK(s) cached for this chip at other TCBs")
+        redis_client.delete(*stale)
+    redis_client.set(key, vcek.public_bytes(serialization.Encoding.PEM).decode())
+    logger.info(f"Cached VCEK ({key})")
+
+
+def sev_fetch_vcek_kds(report, family=None):
+    """
+    VCEK for the report from the AMD KDS; returns (vcek, family).
+
+    With no known family (version-2 report, nothing cached) each family is
+    tried in turn: the KDS serves a chip's VCEK only under the chip's family.
+    """
+    candidates = (family,) if family is not None else SEV_FAMILY_PROBE_ORDER
+    errors = []
+    for candidate in candidates:
+        try:
+            vcek = sev.fetch.request_vcek_kds(candidate, report=report)
+        except Exception as e:
+            errors.append(f"{candidate.value}: {e}")
+            continue
+        if family is None:
+            logger.info(f"Processor family found via the AMD KDS: {candidate.value}")
+        return vcek, candidate
+    raise RuntimeError(
+        "Unable to fetch the VCEK from the AMD KDS (" + "; ".join(errors) + ")"
+    )
+
+
+def sev_get_crl(redis_client: redis.StrictRedis, family):
+    """
+    Current CRL for the processor family.
+
+    The cached CRL is used unless it was fetched more than
+    SEV_CRL_REFRESH_SECONDS ago or is past its next_update; then the KDS is
+    asked and the result cached. If the KDS is unreachable, a cached CRL that is
+    still within its validity period is used; an expired one is not.
+    """
+    key = SEV_CRL_KEY.format(family=family.to_kds_url())
     now = datetime.datetime.now(datetime.timezone.utc)
-    crl_expired = crl is None or (
+    cached = redis_client.hgetall(key)
+    crl = x509.load_pem_x509_crl(_as_bytes(cached["pem"])) if cached else None
+    valid = crl is not None and not (
         crl.next_update_utc is not None and now > crl.next_update_utc
     )
-    if redis_crl is None or crl_expired:
-        try:
-            logger.info("CRL has expired, attempting to refresh and store in Redis")
-            new_crl = sev.fetch.request_crl_kds(
-                sev.fetch.ProcType.GENOA, sev.fetch.Endorsement.VCEK
-            )
-            _ = redis_client.hset(
-                redis_key_crl,
-                mapping={
-                    "crl": new_crl.public_bytes(serialization.Encoding.PEM),
-                },
-            )
-            expire = redis_client.expire(
-                redis_key_crl, 60 * 60 * 24 * 2, nx=True
-            )  # Set expiration of crl key to 48 hours
-            logger.info(f"Set expiration for CRL in Redis to 48 hours: {expire}")
-            crl = new_crl
-        except Exception as e:
+    fetched_at = (
+        datetime.datetime.fromisoformat(_as_str(cached["fetched_at"]))
+        if cached and "fetched_at" in cached
+        else None
+    )
+    if (
+        valid
+        and fetched_at is not None
+        and (now - fetched_at).total_seconds() < (SEV_CRL_REFRESH_SECONDS)
+    ):
+        logger.info(f"Using cached {family.to_kds_url()} CRL ({key})")
+        return crl
+
+    try:
+        crl = sev.fetch.request_crl_kds(family, sev.Endorsement.VCEK)
+    except Exception as e:
+        if valid:
             logger.warning(
-                f"WARNING: Using a CRL older than 48 hours due to error: {e}"
+                f"AMD KDS unreachable ({e}); using the cached {family.to_kds_url()} CRL, "
+                f"valid until {crl.next_update_utc:%Y-%m-%d}"
             )
-
-    log_function_exit("sev_fetch_certs_from_redis", "certificates and CRL")
-    return certs, crl
-
-
-def sev_save_certs_to_redis(
-    redis_client: redis.StrictRedis, report, vcek, ask, ark, crl
-):
-    """
-    Saves the provided certificates (VCEK, ASK, ARK) to Redis based on the TEE evidence.
-
-    Parameters:
-        redis_client (redis.StrictRedis): Redis client instance for database operations.
-        report (sev.AttestationReport): Parsed SEV-SNP attestation report.
-        vcek (bytes): The VCEK certificate to save.
-        ask (bytes): The ASK certificate to save.
-        ark (bytes): The ARK certificate to save.
-
-    Returns:
-        bool: True if saving is successful, False otherwise.
-    """
-    log_function_entry("sev_save_certs_to_redis")
-
-    # check if the provided certificates are valid
-    if not vcek or not ask or not ark:
-        logger.error("One or more certificates are invalid or empty")
-        return False
-
-    chip_id = report.chip_id
-    reported_tcb = report.reported_tcb
-
-    logger.info(
-        f"Attempting to save certificates for chip_id: {chip_id}, reported_tcb: {reported_tcb}"
-    )
-    logger.debug("Checking for existing entries for the chip_id")
-    # Check if any entry exists for this chip_id in Redis
-    # and delete them if they exist
-    # We need to remove any exiting entries for this chip_id
-    # to stop tee reports with old reported_tcb from
-    # passing verification in the future.
-    # Use a pattern to match all keys for the given chip_id
-    # This assumes the keys are structured as "certs:<chip_id>:*"
-    # where * can be any reported_tcb or other suffixes
-    # This will return a list of keys matching the pattern
-    # and we will delete them to avoid stale entries
-    # Note: scan_iter is used to avoid blocking the Redis server
-    chip_pattern = f"certs:{chip_id}:*"
-    existing_keys = list(redis_client.scan_iter(match=chip_pattern, count=1))
-    if existing_keys:
-        logger.info(f"Found existing entries for chip_id, deleting keys")
-        # Delete all existing keys for this chip_id
-        redis_client.delete(*existing_keys)
-
-    # Save the certificates to Redis
-    redis_key = f"certs:{chip_id}:{reported_tcb}"
-    keys = redis_client.hset(
-        redis_key,
+            return crl
+        raise RuntimeError(
+            f"No current {family.to_kds_url()} CRL: cache "
+            f"{'expired' if crl is not None else 'empty'} and the AMD KDS is "
+            f"unreachable ({e})"
+        ) from e
+    redis_client.hset(
+        key,
         mapping={
-            "vcek": vcek.public_bytes(serialization.Encoding.PEM),
-            "ask": ask.public_bytes(serialization.Encoding.PEM),
-            "ark": ark.public_bytes(serialization.Encoding.PEM),
-            "crl": crl.public_bytes(serialization.Encoding.PEM),
+            "pem": crl.public_bytes(serialization.Encoding.PEM).decode(),
+            "fetched_at": now.isoformat(),
         },
     )
+    logger.info(f"Cached {family.to_kds_url()} CRL ({key})")
+    return crl
 
-    redis_key_crl = f"crl:{chip_id}:{reported_tcb}"
-    _ = redis_client.hset(
-        redis_key_crl,
-        mapping={
-            "crl": crl.public_bytes(serialization.Encoding.PEM),
-        },
-    )
-    expire = redis_client.expire(
-        redis_key_crl, 60 * 60 * 24 * 2, nx=True
-    )  # Set expiration of crl key to 48 hours
-    logger.info(f"Set expiration for CRL in Redis to 48 hours: {expire}")
 
-    if keys == 4:
-        # Successfully saved all four certificates
-        # This requires redis version 7.4.0 or later. For the moment we will not expire the CRL and instead expire the whole key
-        # expire = redis_client.hexpire(redis_key, 60 * 60 * 24 * 2, "crl", nx=True)  # Set expiration of crl to 48 hours
-        # logger.info(f"Set expiration for CRL in Redis to 48 hours: {expire}")
-        log_function_exit("sev_save_certs_to_redis", True)
-        return True
-    else:
-        logger.warning(
-            f"Failed to save all certificates to Redis with key: {redis_key}"
-        )
-        logger.warning("It may be that certificates are already present in Redis")
-        log_function_exit("sev_save_certs_to_redis", False)
-        return False
+def _as_bytes(value) -> bytes:
+    return value if isinstance(value, bytes) else value.encode("utf-8")
+
+
+def _as_str(value) -> str:
+    return value.decode("utf-8") if isinstance(value, bytes) else value
 
 
 def tdx_get_collateral_from_redis(
@@ -748,32 +752,19 @@ def sev_vm_verify(
 
     report = sev.AttestationReport.unpack(decoded_evidence)
 
-    # Fetch the VCEK and other certificates from Redis
-    certs, crl = sev_fetch_certs_from_redis(redis_client, report)
-    if certs is None:
-        logger.info("No certificates found in Redis for the provided TEE evidence")
-        logger.info("Fetching the certificates from the AMD key server")
-
-        ca_certs = sev.fetch.request_ca_kds(
-            sev.fetch.ProcType.GENOA, sev.fetch.Endorsement.VCEK
-        )
-        ark = ca_certs[1]
-        ask = ca_certs[0]
-
-        vcek = sev.fetch.request_vcek_kds(sev.fetch.ProcType.GENOA, report=report)
-
-        crl = sev.fetch.request_crl_kds(
-            sev.fetch.ProcType.GENOA, sev.fetch.Endorsement.VCEK
-        )
-
-        # Save the fetched VCEK to Redis for future use
-        # Don't return an error if the save fails so that verfication can continue
-        logger.info("Saving certificates to Redis for future use")
-        if not sev_save_certs_to_redis(redis_client, report, vcek, ask, ark, crl):
-            logger.warning("Failed to save certificates to Redis")
-        else:
-            logger.info("Certificates saved to Redis successfully")
-        certs = {"vcek": vcek, "ask": ask, "ark": ark}
+    # VCEK and CRL from the cache or the AMD KDS; ARK/ASK are built into sev_pytools
+    try:
+        vcek = sev_get_vcek(redis_client, report)
+        family = sev_processor_family(report, vcek)
+        fetched = vcek is None
+        if fetched:
+            vcek, family = sev_fetch_vcek_kds(report, family)
+        logger.info(f"Processor family: {family.value}")
+        crl = sev_get_crl(redis_client, family)
+    except Exception as e:
+        logger.error(f"Could not obtain the SEV-SNP certificates: {e}")
+        log_function_exit("sev_vm_verify", "error")
+        return False, f"Verification error: {e}"
 
     # Use provided report_data or fall back to nonce
     if expected_report_data is not None:
@@ -785,12 +776,14 @@ def sev_vm_verify(
     try:
         policy = sev.AttestationPolicy(policy_json)
         logger.debug("Starting sev_pytools attestation verification")
-        verified = sev.verify.verify_attestation_report(
-            report,
-            certificates=certs,
-            crl=crl,
-            policy=policy,
-            report_data=report_data,
+        sev.verify.cert_verify_attestation_report(report, {"vcek": vcek}, crl)
+        if fetched:  # cache a VCEK only once it has verified a report from its chip
+            try:
+                sev_store_vcek(redis_client, report, vcek)
+            except Exception as e:  # a cache failure must not fail the attestation
+                logger.warning(f"Failed to cache the VCEK: {e}")
+        verified = sev.verify.policy_verify_attestation_report(
+            report, policy, report_data
         )
         logger.debug("Completed sev_pytools attestation verification")
 
